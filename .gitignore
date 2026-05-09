@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-runtime/
+data/
+*.js.map
+.env
+.DS_Store
+observe-bale*.ts
+coverage/
+npm-debug.log*

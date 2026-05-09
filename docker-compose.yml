@@ -1,0 +1,12 @@
+services:
+  bale-notifier:
+    build: .
+    ports:
+      - "6080:6080"
+    volumes:
+      - ./data:/data
+    environment:
+      - DISPLAY=:99
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
