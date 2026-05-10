@@ -42,6 +42,27 @@ docker compose up --build
 # Volume: ./data:/data (config + session persistence)
 ```
 
+## Multi-Instance (Multiple Users on Same Server)
+
+Each user runs in a separate container with unique ports and data volume:
+
+1. Edit `docker-compose.yml` — duplicate the `user1` block for each additional user, changing:
+   - `container_name`: unique name (e.g. `bale-user2`)
+   - `ports`: unique host port (e.g. `"6082:6082"`)
+   - `volumes`: unique data dir (e.g. `./data/user2:/data`)
+   - `environment`: matching `NOVNC_PORT` and unique `VNC_PORT`
+
+2. Start all instances: `docker compose up --build -d`
+
+3. Run setup for a specific user: `docker compose exec user1 node dist/main.js`
+   (Only needed if `/data/config.json` doesn't exist in their volume)
+
+4. Access noVNC for re-login:
+   - User 1: `http://<server-ip>:6081/vnc.html?autoconnect=true`
+   - User 2: `http://<server-ip>:6082/vnc.html?autoconnect=true`
+
+Resource notes: Each instance runs a Chromium process (~200-400MB RAM). Plan accordingly.
+
 ## Project Structure
 
 ```
