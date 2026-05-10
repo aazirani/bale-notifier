@@ -1,3 +1,4 @@
+import puppeteer from "puppeteer";
 import type { AppConfig, BaleEvent, NotificationChannel, DecodedMessage } from "../types.js";
 import { launchBrowser, navigateToBale } from "./browser.js";
 import { WS_HOOK_SCRIPT } from "./ws-hook.js";
@@ -5,8 +6,21 @@ import { FrameDecoder } from "./decoder.js";
 import { parseDecodedMessage } from "./event-parser.js";
 import { startCallDetection } from "./call-detector.js";
 import { createChannel } from "../channels/index.js";
+import { startNoVnc, stopNoVnc } from "../setup/novnc.js";
 import { logger } from "../logger.js";
-import { RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_MAX_BACKOFF_MS, KEEPALIVE_INTERVAL_MS, KEEPALIVE_CHECK_INTERVAL_MS, NOTIFICATION_MAX_RETRIES } from "../constants.js";
+import {
+  RECONNECT_INITIAL_BACKOFF_MS,
+  RECONNECT_MAX_BACKOFF_MS,
+  KEEPALIVE_INTERVAL_MS,
+  KEEPALIVE_CHECK_INTERVAL_MS,
+  NOTIFICATION_MAX_RETRIES,
+  BALE_URL,
+  BROWSER_LAUNCH_ARGS,
+  NAVIGATION_TIMEOUT_MS,
+  SPA_RENDER_TIMEOUT_MS,
+  CONTENT_RENDER_TIMEOUT_MS,
+  RELOGIN_TIMEOUT_MS,
+} from "../constants.js";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
@@ -67,7 +81,11 @@ export class BaleMonitor {
         pageText.includes("زبان");
 
       if (isLoginPage) {
-        throw new Error("Bale session expired — delete ./data/config.json and ./data/bale-session, then re-run setup to re-login");
+        // Close headless browser, then handle re-login with a visible browser
+        await session.close();
+        this.browserClose = null;
+        await this.handleRelogin();
+        return;
       }
 
       // Start DOM-based call detection
@@ -117,8 +135,77 @@ export class BaleMonitor {
 
       await stopCallDetection();
     } finally {
-      await session.close();
-      this.browserClose = null;
+      if (this.browserClose) {
+        await session.close();
+        this.browserClose = null;
+      }
+    }
+  }
+
+  private async handleRelogin(): Promise<void> {
+    logger.warn("Bale session expired. Starting re-login flow...\n");
+
+    const headless = !process.env.DISPLAY || process.env.DISPLAY === ":99" || process.env.DISPLAY === "";
+    let novncUrl = "";
+
+    if (headless) {
+      try {
+        novncUrl = await startNoVnc();
+        logger.info(`noVNC started for re-login: ${novncUrl}`);
+      } catch (err) {
+        logger.warn("Failed to start noVNC:", err);
+      }
+    }
+
+    // Notify the user so they know to re-login
+    const externalUrl = this.config.bale.noVncUrl || novncUrl;
+    try {
+      await this.dispatch({
+        type: "message",
+        timestamp: new Date(),
+        source: "Bale Notifier",
+        preview: `Session expired. Please re-login${externalUrl ? ` via noVNC: ${externalUrl}` : " in the browser window"}. You have 10 minutes.`,
+      });
+    } catch (err) {
+      logger.warn("Failed to send re-login notification:", err);
+    }
+
+    // Launch visible browser so the user can interact with the login page
+    const browser = await puppeteer.launch({
+      headless: false,
+      args: BROWSER_LAUNCH_ARGS,
+      userDataDir: this.config.bale.sessionDir,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      env: { ...process.env },
+    });
+
+    try {
+      const page = await browser.newPage();
+      await page.goto(BALE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+
+      try {
+        await page.waitForFunction(
+          `!document.querySelector('.splash-container') && !document.querySelector('.spin')`,
+          { timeout: SPA_RENDER_TIMEOUT_MS },
+        );
+      } catch { /* ignore render timeout */ }
+
+      try {
+        await page.waitForFunction(
+          `document.querySelectorAll('span, button, input').length > 5`,
+          { timeout: CONTENT_RENDER_TIMEOUT_MS },
+        );
+      } catch { /* ignore content timeout */ }
+
+      logger.info("Waiting for re-login...");
+      await page.waitForFunction(
+        `!window.location.pathname.includes('/login') && !document.body.textContent.includes('login me') && !document.body.textContent.includes('زبان')`,
+        { timeout: RELOGIN_TIMEOUT_MS },
+      );
+      logger.info("Re-login successful! Resuming monitoring...\n");
+    } finally {
+      await browser.close();
+      if (headless) stopNoVnc();
     }
   }
 
