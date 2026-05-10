@@ -1,10 +1,13 @@
-import type { AppConfig, BaleEvent, NotificationChannel } from "../types.js";
+import type { AppConfig, BaleEvent, NotificationChannel, DecodedMessage } from "../types.js";
 import { launchBrowser, navigateToBale } from "./browser.js";
-import { startDomMonitoring } from "./ws-interceptor.js";
-import { parseDomNotification } from "./event-parser.js";
+import { WS_HOOK_SCRIPT } from "./ws-hook.js";
+import { FrameDecoder } from "./decoder.js";
+import { parseDecodedMessage, type NameCache } from "./event-parser.js";
+import { startCallDetection } from "./call-detector.js";
 import { createChannel } from "../channels/index.js";
 import { logger } from "../logger.js";
 import { RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_MAX_BACKOFF_MS, KEEPALIVE_INTERVAL_MS, KEEPALIVE_CHECK_INTERVAL_MS, NOTIFICATION_MAX_RETRIES } from "../constants.js";
+import type { Page } from "puppeteer";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
@@ -42,6 +45,19 @@ export class BaleMonitor {
     this.browserClose = session.close;
 
     try {
+      // Inject WS hook BEFORE navigating to Bale
+      await session.page.evaluateOnNewDocument(WS_HOOK_SCRIPT);
+
+      // Expose the callback for the WS hook to call
+      const decoder = new FrameDecoder();
+      await session.page.exposeFunction("__baleOnFrame", (rawBytes: number[]) => {
+        const bytes = new Uint8Array(rawBytes);
+        const decoded = decoder.decode(bytes);
+        if (decoded && this.config.notifications.messages) {
+          this.handleDecodedMessage(session.page, decoded);
+        }
+      });
+
       await navigateToBale(session.page);
 
       const url = session.page.url();
@@ -55,19 +71,24 @@ export class BaleMonitor {
         throw new Error("Bale session expired — delete ./data/config.json and ./data/bale-session, then re-run setup to re-login");
       }
 
-      logger.info("Connected to Bale. Monitoring for notifications...\n");
-
-      const cleanup = await startDomMonitoring(session.page, async (notification) => {
-        logger.info(`Detected: ${notification.type}${notification.callerName ? ` from ${notification.callerName}` : ""}`);
-        const event = parseDomNotification(notification);
-        if (event && this.shouldNotify(event)) {
+      // Start DOM-based call detection
+      const stopCallDetection = await startCallDetection(session.page, async (callerName) => {
+        logger.info(`Detected: incoming call from ${callerName}`);
+        if (this.config.notifications.calls) {
+          const event: BaleEvent = {
+            type: "call",
+            timestamp: new Date(),
+            sender: callerName,
+            chatName: callerName,
+          };
           await this.dispatch(event);
         }
       });
 
+      logger.info("Connected to Bale. Monitoring for notifications via WebSocket...\n");
+
       this.backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
 
-      // Periodic keepalive: reload page every 30 minutes to prevent idle disconnect
       let keepalive: NodeJS.Timeout | null = null;
       let disconnected = false;
 
@@ -96,19 +117,68 @@ export class BaleMonitor {
         }, KEEPALIVE_CHECK_INTERVAL_MS);
       });
 
-      await cleanup();
+      await stopCallDetection();
     } finally {
       await session.close();
       this.browserClose = null;
     }
   }
 
-  private shouldNotify(event: BaleEvent): boolean {
-    const prefs = this.config.notifications;
-    switch (event.type) {
-      case "message": return prefs.messages;
-      case "call": return prefs.calls;
-      case "group_notification": return prefs.groups;
+  private async handleDecodedMessage(page: Page, msg: DecodedMessage): Promise<void> {
+    try {
+      const { userCache, chatCache } = await this.resolveNameCaches(page);
+      const event = parseDecodedMessage(msg, userCache, chatCache);
+      if (event) {
+        await this.dispatch(event);
+      }
+    } catch (err) {
+      logger.warn("Failed to resolve names or dispatch event:", err);
+    }
+  }
+
+  private async resolveNameCaches(page: Page): Promise<{ userCache: NameCache; chatCache: NameCache }> {
+    try {
+      const caches = await page.evaluate(() => {
+        const rootEl = document.getElementById("root");
+        if (!rootEl) return { userCache: {}, chatCache: {} };
+
+        const fiberKey = Object.keys(rootEl).find((k) => k.startsWith("__reactFiber"));
+        if (!fiberKey) return { userCache: {}, chatCache: {} };
+
+        let fiber = (rootEl as any)[fiberKey];
+        let store: any = null;
+        for (let i = 0; i < 50 && fiber && !store; i++) {
+          const state = fiber.memoizedState || fiber.stateNode?.memoizedState;
+          if (state?.store) store = state.store;
+          if (state?.memoizedState?.store) store = state.memoizedState.store;
+          fiber = fiber.return;
+        }
+
+        if (!store) return { userCache: {}, chatCache: {} };
+
+        const state = store.getState();
+        const userCache: Record<string, string> = {};
+        const chatCache: Record<string, string> = {};
+
+        if (state.Users) {
+          try {
+            const users = state.Users instanceof Map ? state.Users : new Map(Object.entries(state.Users));
+            users.forEach((user: any, key: any) => {
+              const name = user?.firstName || user?.lastName || user?.displayName;
+              if (name) userCache[String(user?.userId || user?.id || key)] = name;
+            });
+          } catch {}
+        }
+
+        return { userCache, chatCache };
+      });
+
+      return {
+        userCache: caches.userCache,
+        chatCache: caches.chatCache,
+      };
+    } catch {
+      return { userCache: {}, chatCache: {} };
     }
   }
 
