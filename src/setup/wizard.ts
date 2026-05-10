@@ -7,7 +7,13 @@ import type { AppConfig, ChannelType } from "../types.js";
 import { saveConfig } from "../config.js";
 import { startNoVnc, stopNoVnc } from "./novnc.js";
 import { logger } from "../logger.js";
-import { BALE_URL, DEFAULT_CONFIG_PATH, DEFAULT_SESSION_DIR, BROWSER_LAUNCH_ARGS, NAVIGATION_TIMEOUT_MS, SPA_RENDER_TIMEOUT_MS, CONTENT_RENDER_TIMEOUT_MS, LOGIN_TIMEOUT_MS } from "../constants.js";
+import { BALE_URL, DEFAULT_CONFIG_PATH, BROWSER_LAUNCH_ARGS, NAVIGATION_TIMEOUT_MS, SPA_RENDER_TIMEOUT_MS, CONTENT_RENDER_TIMEOUT_MS, LOGIN_TIMEOUT_MS, NOVNC_PORT } from "../constants.js";
+import os from "node:os";
+
+function sessionDirFromConfigPath(configPath: string): string {
+  const dataDir = configPath.substring(0, configPath.lastIndexOf("/"));
+  return `${dataDir}/bale-session`;
+}
 
 function isHeadless(): boolean {
   // No DISPLAY or DISPLAY=:99 (Xvfb) means headless
@@ -20,9 +26,10 @@ export async function runWizard(configPath = DEFAULT_CONFIG_PATH): Promise<AppCo
   const sessionDir = await setupBaleAuth();
   const channelConfig = await setupChannel();
   const notifications = await setupNotificationPrefs();
+  const noVncUrl = await setupNoVncUrl();
 
   const config: AppConfig = {
-    bale: { sessionDir },
+    bale: { sessionDir, noVncUrl },
     channel: channelConfig,
     notifications,
   };
@@ -46,8 +53,10 @@ async function setupBaleAuth(): Promise<string> {
     process.env.DISPLAY = ":99";
   }
 
+  const sessionDir = sessionDirFromConfigPath(DEFAULT_CONFIG_PATH);
+
   // Clean up stale Chromium lock files from previous runs
-  const lockFile = `${DEFAULT_SESSION_DIR}/SingletonLock`;
+  const lockFile = `${sessionDir}/SingletonLock`;
   try { fs.unlinkSync(lockFile); } catch (err) { logger.debug("No stale lock file to clean:", err); }
 
   logger.info("Opening browser for Bale login...\n");
@@ -55,7 +64,7 @@ async function setupBaleAuth(): Promise<string> {
   const browser = await puppeteer.launch({
     headless: false,
     args: BROWSER_LAUNCH_ARGS,
-    userDataDir: DEFAULT_SESSION_DIR,
+    userDataDir: sessionDir,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     env: { ...process.env, DISPLAY: process.env.DISPLAY || ":99" },
   });
@@ -116,7 +125,7 @@ async function setupBaleAuth(): Promise<string> {
   }
 
   logger.info("Bale session captured.\n");
-  return DEFAULT_SESSION_DIR;
+  return sessionDir;
 }
 
 async function setupChannel(): Promise<AppConfig["channel"]> {
@@ -174,4 +183,30 @@ async function setupNotificationPrefs(): Promise<AppConfig["notifications"]> {
   const groups = await confirm({ message: "Notify on group activity?", default: true });
 
   return { messages, calls, groups };
+}
+
+async function setupNoVncUrl(): Promise<string> {
+  const detectedIp = detectServerIp();
+  const defaultIp = detectedIp || "localhost";
+
+  logger.info("\nStep 4: Server address for noVNC\n");
+  logger.info("This is the IP used in re-login notifications when the Bale session expires.\n");
+
+  const ip = await input({ message: "Server IP or hostname:", default: defaultIp });
+
+  return `http://${ip}:${NOVNC_PORT}/vnc.html?autoconnect=true`;
+}
+
+function detectServerIp(): string | null {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    // Skip Docker/internal interfaces
+    if (name === "lo" || name.startsWith("docker") || name.startsWith("br-")) continue;
+    for (const iface of interfaces[name] ?? []) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return null;
 }
