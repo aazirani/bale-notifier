@@ -79,10 +79,40 @@ The setup wizard creates `./data/config.json`:
 | `CONFIG_PATH` | `/data/config.json` | Path to config file |
 | `PUPPETEER_EXECUTABLE_PATH` | — | Path to Chromium binary |
 | `DISPLAY` | — | X11 display for headed mode |
+| `NOVNC_PORT` | `6080` | Port for noVNC web access |
+| `VNC_PORT` | `5900` | Port for VNC server |
 
 ### noVNC (Headless Servers)
 
-When running on a server without a desktop, the wizard starts noVNC on port **6080**. Open `http://your-server:6080/vnc.html?autoconnect=true` in your browser to complete Bale login.
+When running on a server without a desktop, the wizard starts noVNC on the configured port (default **6080**). Open `http://your-server:6080/vnc.html?autoconnect=true` in your browser to complete Bale login.
+
+## Multi-Instance
+
+Run multiple instances for different users on the same server. Each user gets their own container with isolated ports and data.
+
+Edit `docker-compose.yml` and duplicate the `user1` block for each additional user:
+
+```yaml
+user2:
+  <<: *bale-notifier
+  container_name: bale-user2
+  ports:
+    - "6082:6082"
+  volumes:
+    - ./data/user2:/data
+  environment:
+    - DISPLAY=:99
+    - NOVNC_PORT=6082
+    - VNC_PORT=5902
+```
+
+Then start all instances:
+
+```bash
+docker compose up --build -d
+```
+
+Each instance runs its own Chromium process (~200-400MB RAM). Plan server resources accordingly.
 
 ## Architecture
 
@@ -110,7 +140,7 @@ npm run dev        # Watch mode for development
 
 ## Troubleshooting
 
-**"Bale session expired"** — Delete `./data/bale-session` and `./data/config.json`, then restart to re-authenticate.
+**"Bale session expired"** — The notifier will automatically start a re-login flow and send you a noVNC link. If that fails, delete `./data/bale-session` and `./data/config.json`, then restart to re-authenticate from scratch.
 
 **No notifications arriving** — Set `LOG_LEVEL=debug` to see detailed monitoring output. Check that your bot token/webhook URL is valid.
 
