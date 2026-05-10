@@ -1,26 +1,27 @@
-import type { BaleEvent, DomNotification } from "../types.js";
+import type { BaleEvent, DecodedMessage } from "../types.js";
 
-export function parseDomNotification(notification: DomNotification): BaleEvent | null {
-  switch (notification.type) {
-    case "incoming_call":
-      return {
-        type: "call",
-        timestamp: new Date(),
-        sender: notification.callerName,
-        chatName: notification.callerName ?? "Unknown",
-      };
+export interface NameCache {
+  [uid: string]: string;
+}
 
-    case "unread_badge_change":
-      return {
-        type: "message",
-        timestamp: new Date(),
-        sender: notification.chatName ?? "Unknown",
-        chatName: notification.chatName ?? "Unknown",
-        preview: notification.messagePreview ?? undefined,
-        chatUrl: notification.chatUrl ?? undefined,
-      };
+export function parseDecodedMessage(
+  msg: DecodedMessage,
+  userCache: NameCache,
+  chatCache: NameCache,
+): BaleEvent | null {
+  const senderKey = String(msg.senderUid);
+  const peerKey = String(msg.peerId);
 
-    default:
-      return null;
-  }
+  const sender = userCache[senderKey] ?? "Unknown";
+  const chatName = chatCache[peerKey] ?? "Unknown Chat";
+  const chatUrl = `https://web.bale.ai/contacts?uid=${msg.peerId}`;
+
+  return {
+    type: "message",
+    timestamp: new Date(Number(msg.date) * 1000),
+    sender,
+    chatName,
+    preview: msg.preview || undefined,
+    chatUrl,
+  };
 }
