@@ -55,16 +55,15 @@ export interface AppConfig {
   notifications: NotificationPreferences;
 }
 
-// --- DOM Notification Types ---
+// --- Decoded Message Types (from protobuf) ---
 
-export type DomNotificationType = "incoming_call" | "new_message" | "unread_badge_change";
-
-export interface DomNotification {
-  type: DomNotificationType;
-  callerName?: string;
-  chatName?: string;
-  messagePreview?: string;
-  chatUrl?: string;
-  unreadCount?: number;
-  rawText?: string;
+export interface DecodedMessage {
+  senderUid: bigint;
+  peerType: number;
+  peerId: bigint;
+  rid: bigint;
+  date: bigint;
+  unreadCount: number;
+  preview: string;
+  messageType: "text" | "document" | "sticker" | "animated_sticker" | "poll" | "deleted" | "empty" | "long_text" | "unknown";
 }

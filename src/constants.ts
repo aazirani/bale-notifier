@@ -7,7 +7,6 @@ export const RECONNECT_INITIAL_BACKOFF_MS = 1_000;
 export const RECONNECT_MAX_BACKOFF_MS = 60_000;
 export const KEEPALIVE_INTERVAL_MS = 30 * 60 * 1000;
 export const KEEPALIVE_CHECK_INTERVAL_MS = 1_000;
-export const BADGE_SCAN_INTERVAL_MS = 5_000;
 export const NOVNC_STARTUP_DELAY_MS = 1_000;
 export const NOVNC_WEBSOCKIFY_DELAY_MS = 1_500;
 
@@ -35,3 +34,7 @@ export const BROWSER_LAUNCH_ARGS = [
   "--disable-setuid-sandbox",
   "--disable-dev-shm-usage",
 ];
+
+// Decoder
+export const DEDUP_BUFFER_SIZE = 100;
+export const PREVIEW_MAX_LENGTH = 100;
