@@ -1,5 +1,6 @@
 // Timeouts
 export const LOGIN_TIMEOUT_MS = 300_000;
+export const RELOGIN_TIMEOUT_MS = 600_000;
 export const NAVIGATION_TIMEOUT_MS = 60_000;
 export const SPA_RENDER_TIMEOUT_MS = 60_000;
 export const CONTENT_RENDER_TIMEOUT_MS = 30_000;
@@ -14,8 +15,8 @@ export const NOVNC_WEBSOCKIFY_DELAY_MS = 1_500;
 export const NOTIFICATION_MAX_RETRIES = 3;
 
 // Ports
-export const NOVNC_PORT = 6080;
-export const VNC_PORT = 5900;
+export const NOVNC_PORT = Number(process.env.NOVNC_PORT) || 6080;
+export const VNC_PORT = Number(process.env.VNC_PORT) || 5900;
 
 // Display
 export const VIEWPORT_WIDTH = 1280;
