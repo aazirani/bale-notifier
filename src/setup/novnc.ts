@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { logger } from "../logger.js";
 import { NOVNC_PORT, VNC_PORT, XVFB_SCREEN, NOVNC_STARTUP_DELAY_MS, NOVNC_WEBSOCKIFY_DELAY_MS } from "../constants.js";
 
-const DISPLAY = ":99";
+const DISPLAY = process.env.DISPLAY || ":99";
 
 let xvfb: ChildProcess | null = null;
 let x11vnc: ChildProcess | null = null;
