@@ -5,8 +5,7 @@ export type BaleEventType = "message" | "call" | "group_notification";
 export interface BaleEvent {
   type: BaleEventType;
   timestamp: Date;
-  sender?: string;
-  chatName: string;
+  source: string;
   preview?: string;
   chatUrl?: string;
   callType?: "voice" | "video";
@@ -63,7 +62,6 @@ export interface DecodedMessage {
   peerId: bigint;
   rid: bigint;
   date: bigint;
-  unreadCount: number;
   preview: string;
-  messageType: "text" | "document" | "sticker" | "animated_sticker" | "poll" | "deleted" | "empty" | "long_text" | "unknown";
+  messageType: "text" | "document" | "sticker" | "animated_sticker" | "poll" | "deleted" | "empty" | "unknown";
 }

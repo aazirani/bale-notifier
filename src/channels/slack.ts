@@ -4,23 +4,16 @@ function formatEvent(event: BaleEvent): string {
   switch (event.type) {
     case "message":
       return [
-        "*New Bale Message*",
-        `From: ${event.sender ?? "Unknown"}`,
-        `Chat: ${event.chatName}`,
+        `*New Bale Message in ${event.source}*`,
         event.preview ? `Preview: ${event.preview}` : "",
       ].filter(Boolean).join("\n");
 
     case "call":
-      return [
-        `*${event.callType === "video" ? "Video" : "Voice"} Call from Bale*`,
-        `From: ${event.sender ?? "Unknown"}`,
-        `Chat: ${event.chatName}`,
-      ].join("\n");
+      return `*${event.callType === "video" ? "Video" : "Voice"} ${event.source}*`;
 
     case "group_notification":
       return [
         "*Bale Group Notification*",
-        `Group: ${event.chatName}`,
         event.preview ?? "New activity",
       ].join("\n");
   }

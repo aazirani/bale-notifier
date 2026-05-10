@@ -2,7 +2,6 @@ import { schemas } from "./protobuf/index.js";
 import type { DecodedMessage } from "../types.js";
 import { DEDUP_BUFFER_SIZE, PREVIEW_MAX_LENGTH } from "../constants.js";
 import { logger } from "../logger.js";
-import type { Long } from "protobufjs";
 
 type MessageType = DecodedMessage["messageType"];
 
@@ -12,33 +11,29 @@ interface ContentResult {
   skip: boolean;
 }
 
-// Convert protobufjs values to native BigInt
-function toBigInt(value: any): bigint {
+function toBigInt(value: unknown): bigint {
   if (value === null || value === undefined) return 0n;
   if (typeof value === "bigint") return value;
   if (typeof value === "number") return BigInt(value);
   if (typeof value === "string") return BigInt(value);
-  // protobufjs Long object - use toBigInt() if available
-  if (typeof value === "object" && typeof value.toBigInt === "function") {
-    return value.toBigInt();
+  if (typeof value === "object" && typeof (value as any).toBigInt === "function") {
+    return (value as any).toBigInt();
   }
-  // Fallback for Long objects without toBigInt
-  if (typeof value === "object" && "low" in value && "high" in value) {
-    return (BigInt(value.high) << 32n) | BigInt(value.low >>> 0);
+  if (typeof value === "object" && "low" in (value as any) && "high" in (value as any)) {
+    const v = value as { low: number; high: number };
+    return (BigInt(v.high) << 32n) | BigInt(v.low >>> 0);
   }
   return 0n;
 }
 
 function classifyContent(rawMessage: Uint8Array): ContentResult {
   try {
-    // If the message bytes are empty, return unknown
     if (!rawMessage || rawMessage.length === 0) {
       return { messageType: "unknown", preview: "[Message]", skip: false };
     }
 
     const content: any = schemas.MessageContent.decode(rawMessage);
 
-    // Check text messages first (they have actual text content)
     if (content.textMessage && content.textMessage.text) {
       const text: string = content.textMessage.text;
       return {
@@ -48,17 +43,6 @@ function classifyContent(rawMessage: Uint8Array): ContentResult {
       };
     }
 
-    if (content.longTextMessage && content.longTextMessage.text) {
-      const text: string = content.longTextMessage.text;
-      return {
-        messageType: "long_text",
-        preview: text.length > PREVIEW_MAX_LENGTH ? text.slice(0, PREVIEW_MAX_LENGTH) : text,
-        skip: false,
-      };
-    }
-
-    // For bytes fields, check if they have actual data (non-empty arrays)
-    // Priority order: deleted/empty should be checked before document
     if (content.deletedMessage && content.deletedMessage.length > 0) {
       return { messageType: "deleted", preview: "", skip: true };
     }
@@ -98,16 +82,39 @@ export class FrameDecoder {
 
       if (!envelope.update) return null;
 
-      let dialog: any;
+      // Decode the update bytes — two-layer wrapper:
+      // UpdatePayload (field 1 = content bytes) → NewMessageUpdate (field 55 = newMessage bytes)
+      const updatePayload = new Uint8Array(envelope.update.update);
+      let payload: any;
       try {
-        dialog = schemas.Dialog.decode(envelope.update.update);
+        payload = schemas.UpdatePayload.decode(updatePayload);
       } catch {
         return null;
       }
 
-      if (!dialog.unreadCount || dialog.unreadCount <= 0) return null;
+      if (!payload.content) return null;
 
-      const rid = toBigInt(dialog.rid);
+      let updateContent: any;
+      try {
+        updateContent = schemas.NewMessageUpdate.decode(new Uint8Array(payload.content));
+      } catch {
+        return null;
+      }
+
+      const newMsgBytes = updateContent?.newMessage;
+      if (!newMsgBytes) return null;
+
+      // Decode the newMessage bytes as NewMessage type
+      let msg: any;
+      try {
+        const bytes = newMsgBytes instanceof Uint8Array ? newMsgBytes : new Uint8Array(newMsgBytes);
+        msg = schemas.NewMessage.decode(bytes);
+      } catch {
+        return null;
+      }
+
+      // Extract message ID and deduplicate
+      const rid = toBigInt(msg.rid);
       if (rid === 0n) return null;
       if (this.ridBuffer.includes(rid)) return null;
       this.ridBuffer.push(rid);
@@ -115,25 +122,28 @@ export class FrameDecoder {
         this.ridBuffer.shift();
       }
 
-      const senderUid = toBigInt(dialog.senderUid);
-      const peerId = dialog.peer ? toBigInt(dialog.peer.id) : 0n;
-      const peerType = dialog.peer?.type ?? 0;
-      const date = toBigInt(dialog.date);
+      // Extract sender info
+      const senderUid = toBigInt(msg.from?.id ?? msg.senderUid);
+      const peerType = msg.from?.type ?? msg.to?.type ?? 0;
+      const peerId = toBigInt(msg.to?.id ?? msg.from?.id ?? 0);
+      const date = toBigInt(msg.date);
 
-      if (!dialog.message) {
+      // Decode message content
+      if (!msg.message) {
         return {
           senderUid,
           peerType,
           peerId,
           rid,
           date,
-          unreadCount: dialog.unreadCount,
           preview: "[Message]",
           messageType: "unknown",
         };
       }
 
-      const content = classifyContent(dialog.message);
+      // msg.message is a decoded MessageContent or raw bytes
+      const messageData = msg.message instanceof Uint8Array ? msg.message : new Uint8Array(msg.message);
+      const content = classifyContent(messageData);
       if (content.skip) return null;
 
       return {
@@ -142,11 +152,9 @@ export class FrameDecoder {
         peerId,
         rid,
         date,
-        unreadCount: dialog.unreadCount,
         preview: content.preview,
         messageType: content.messageType,
       };
-
     } catch (err) {
       logger.debug("Failed to decode frame:", err);
       return null;

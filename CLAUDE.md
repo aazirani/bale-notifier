@@ -12,8 +12,12 @@ Docker-packaged notification forwarder that monitors web.bale.ai for new message
 ## Bale Protocol Notes
 
 - Bale uses **Protocol Buffers over WebSocket** (`wss://next-ws.bale.ai/ws/`), NOT JSON
-- WebSocket frames are gRPC-Web with protobuf encoding — impractical to parse without `.proto` definitions
-- We use **DOM monitoring** instead: MutationObserver watches for UI changes (call modals, unread badges)
+- WebSocket `binaryType` is `"blob"` — ws-hook.ts must handle Blob→ArrayBuffer conversion
+- ServerEnvelope (field 2 = update, field 1 = response, field 4 = pong)
+- Updates use two-layer wrapper: UpdatePayload (field 1 = content bytes, field 3 = seq, field 4 = timestamp) → NewMessageUpdate (field 55 = newMessage bytes) → NewMessage
+- NewMessage: field 1 = Peer(from), field 2 = senderUid, field 3 = date(ms), field 4 = rid, field 5 = MessageContent(bytes), field 14 = Peer(to)
+- MessageContent uses field 15 for TextMessage, field 4 for document, field 3 for deleted
+- We also use **DOM monitoring** for call detection: MutationObserver watches for call modals
 - Key DOM selectors:
   - Incoming call: `.ReactModal__Overlay` with "Answer"/"Decline" text, caller name in `.HOE2x2`
   - Unread badge: `.eVv8xC` span with numeric count

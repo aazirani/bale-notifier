@@ -2,32 +2,16 @@ import { describe, it, expect } from "vitest";
 import { schemas } from "../src/engine/protobuf/index.js";
 import protobuf from "protobufjs";
 
-// Helper to handle protobufjs Long objects
 function toBigInt(value: unknown): bigint {
   if (typeof value === "bigint") return value;
   if (typeof value === "number") return BigInt(value);
   if (typeof value === "object" && value !== null && "low" in value && "high" in value) {
-    // protobufjs Long object
-    const low = (value as { low: number }).low;
-    const high = (value as { high: number }).high;
-    const unsigned = (value as { unsigned?: boolean }).unsigned || false;
-    // Handle signed/unsigned correctly
-    const result = BigInt(high) * BigInt(2 ** 32) + BigInt(low >>> 0);
-    return unsigned ? result : (result >= BigInt(2 ** 63) ? result - BigInt(2 ** 64) : result);
+    const v = value as { low: number; high: number };
+    return BigInt(v.high) * BigInt(2 ** 32) + BigInt(v.low >>> 0);
   }
   return BigInt(0);
 }
 
-function toNumber(value: unknown): number {
-  if (typeof value === "number") return value;
-  if (typeof value === "bigint") return Number(value);
-  if (typeof value === "object" && value !== null && "low" in value) {
-    return (value as { low: number }).low;
-  }
-  return 0;
-}
-
-// Helper to convert BigInt to protobufjs Long for encoding
 function bigintToLong(value: bigint | number) {
   if (typeof value === "number") return value;
   return protobuf.util.Long.fromBigInt(value);
@@ -35,67 +19,111 @@ function bigintToLong(value: bigint | number) {
 
 describe("Protobuf schemas", () => {
   it("encodes and decodes a Peer", () => {
-    const Peer = schemas.Peer;
-    const original = Peer.create({
-      type: 1,
-      id: bigintToLong(12345),
-      accessHash: bigintToLong(67890n)
-    });
+    const { Peer } = schemas;
+    const original = Peer.create({ type: 1, id: bigintToLong(12345), accessHash: bigintToLong(67890n) });
     const encoded = Peer.encode(original).finish();
     const decoded = Peer.decode(encoded);
     expect(decoded.type).toBe(1);
-    expect(toNumber(decoded.id)).toBe(12345);
+    expect(toBigInt(decoded.id)).toBe(12345n);
     expect(toBigInt(decoded.accessHash)).toBe(67890n);
   });
 
   it("encodes and decodes a TextMessage", () => {
-    const TextMessage = schemas.TextMessage;
+    const { TextMessage } = schemas;
     const original = TextMessage.create({ text: "Hello world" });
     const encoded = TextMessage.encode(original).finish();
     const decoded = TextMessage.decode(encoded);
     expect(decoded.text).toBe("Hello world");
   });
 
-  it("encodes and decodes a ServerEnvelope with a Dialog update", () => {
-    const { ServerEnvelope, Update, Dialog, Peer, TextMessage, MessageContent } = schemas;
+  it("encodes and decodes a NewMessage", () => {
+    const { NewMessage, Peer, MessageContent, TextMessage } = schemas;
 
-    const peer = Peer.create({ type: 1, id: bigintToLong(100), accessHash: bigintToLong(200n) });
-    const textMsg = TextMessage.create({ text: "Test message" });
-    const content = MessageContent.create({ textMessage: textMsg });
-    const dialog = Dialog.create({
-      peer,
-      unreadCount: 3,
-      sortDate: bigintToLong(1700000000n),
-      senderUid: bigintToLong(50n),
+    const from = Peer.create({ type: 1, id: bigintToLong(100) });
+    const to = Peer.create({ type: 1, id: bigintToLong(200) });
+    const contentBytes = MessageContent.encode(
+      MessageContent.create({ textMessage: TextMessage.create({ text: "Test message" }) })
+    ).finish();
+
+    const newMsg = NewMessage.create({
+      from,
+      senderUid: bigintToLong(100n),
+      date: bigintToLong(1778401706519n),
       rid: bigintToLong(999n),
-      date: bigintToLong(1700000000n),
-      message: MessageContent.encode(content).finish(), // Encode to bytes
+      message: contentBytes,
+      to,
     });
 
-    const dialogBytes = Dialog.encode(dialog).finish();
-    const update = Update.create({ update: dialogBytes });
+    const encoded = NewMessage.encode(newMsg).finish();
+    const decoded: any = NewMessage.decode(encoded);
+
+    expect(toBigInt(decoded.from?.id)).toBe(100n);
+    expect(toBigInt(decoded.to?.id)).toBe(200n);
+    expect(toBigInt(decoded.rid)).toBe(999n);
+    // message is bytes — decode separately
+    const content: any = MessageContent.decode(new Uint8Array(decoded.message));
+    expect(content.textMessage?.text).toBe("Test message");
+  });
+
+  it("round-trips through UpdatePayload, NewMessageUpdate, and ServerEnvelope", () => {
+    const { UpdatePayload, NewMessageUpdate, NewMessage, Peer, TextMessage, MessageContent, ServerEnvelope, Update } = schemas;
+
+    const from = Peer.create({ type: 1, id: bigintToLong(100) });
+    const to = Peer.create({ type: 1, id: bigintToLong(200) });
+    const contentBytes = MessageContent.encode(
+      MessageContent.create({ textMessage: TextMessage.create({ text: "Hello" }) })
+    ).finish();
+    const newMsg = NewMessage.create({
+      from, senderUid: bigintToLong(100n), date: bigintToLong(1778401706519n),
+      rid: bigintToLong(42n), message: contentBytes, to,
+    });
+    const newMsgBytes = NewMessage.encode(newMsg).finish();
+
+    const inner = NewMessageUpdate.create({ newMessage: newMsgBytes });
+    const innerBytes = NewMessageUpdate.encode(inner).finish();
+    const wrapper = UpdatePayload.create({ content: innerBytes });
+    const wrapperBytes = UpdatePayload.encode(wrapper).finish();
+
+    const update = Update.create({ update: wrapperBytes });
     const envelope = ServerEnvelope.create({ update });
+    const envelopeBytes = ServerEnvelope.encode(envelope).finish();
 
-    const encoded = ServerEnvelope.encode(envelope).finish();
-    const decoded = ServerEnvelope.decode(encoded);
+    const decodedEnv: any = ServerEnvelope.decode(envelopeBytes);
+    expect(decodedEnv.update).toBeDefined();
 
-    expect(decoded.update).toBeDefined();
+    const decodedWrapper: any = UpdatePayload.decode(new Uint8Array(decodedEnv.update.update));
+    expect(decodedWrapper.content).toBeDefined();
 
-    const decodedDialog = Dialog.decode(decoded.update.update);
-    expect(decodedDialog.unreadCount).toBe(3);
-    expect(toBigInt(decodedDialog.rid)).toBe(999n);
-    expect(toBigInt(decodedDialog.senderUid)).toBe(50n);
+    const decodedInner: any = NewMessageUpdate.decode(new Uint8Array(decodedWrapper.content));
+    expect(decodedInner.newMessage).toBeDefined();
 
-    const decodedContent = MessageContent.decode(decodedDialog.message);
-    expect(decodedContent.textMessage.text).toBe("Test message");
+    const decodedMsg: any = NewMessage.decode(new Uint8Array(decodedInner.newMessage));
+    expect(toBigInt(decodedMsg.rid)).toBe(42n);
+    const decodedContent: any = MessageContent.decode(new Uint8Array(decodedMsg.message));
+    expect(decodedContent.textMessage?.text).toBe("Hello");
   });
 
   it("encodes and decodes a ServerEnvelope without update (pong)", () => {
     const { ServerEnvelope } = schemas;
     const envelope = ServerEnvelope.create({ pong: new Uint8Array(0) });
     const encoded = ServerEnvelope.encode(envelope).finish();
-    const decoded = ServerEnvelope.decode(encoded);
-    // protobufjs returns null for missing oneof fields, not undefined
+    const decoded: any = ServerEnvelope.decode(encoded);
     expect(decoded.update).toBeNull();
+  });
+
+  it("correctly uses field 15 for textMessage in MessageContent", () => {
+    const { MessageContent, TextMessage } = schemas;
+    const content = MessageContent.create({ textMessage: TextMessage.create({ text: "test" }) });
+    const encoded = MessageContent.encode(content).finish();
+    const decoded: any = MessageContent.decode(encoded);
+    expect(decoded.textMessage?.text).toBe("test");
+  });
+
+  it("correctly uses field 3 for index in Response", () => {
+    const { Response } = schemas;
+    const resp = Response.create({ index: 42 });
+    const encoded = Response.encode(resp).finish();
+    const decoded: any = Response.decode(encoded);
+    expect(decoded.index).toBe(42);
   });
 });

@@ -48,7 +48,9 @@ export async function startNoVnc(): Promise<string> {
 }
 
 export function stopNoVnc(): void {
-  logger.info("[noVNC] cleanup: Stopping all services");
+  // Detach stderr listeners first to prevent traceback noise during interactive prompts
+  x11vnc?.stderr?.removeAllListeners();
+  websockify?.stderr?.removeAllListeners();
   websockify?.kill();
   x11vnc?.kill();
   xvfb?.kill();

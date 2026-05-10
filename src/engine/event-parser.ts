@@ -1,27 +1,17 @@
 import type { BaleEvent, DecodedMessage } from "../types.js";
 
-export interface NameCache {
-  [uid: string]: string;
+function sourceLabel(peerType: number): string {
+  if (peerType === 1) return "Private Chat";
+  if (peerType === 2) return "Group";
+  return "Channel";
 }
 
-export function parseDecodedMessage(
-  msg: DecodedMessage,
-  userCache: NameCache,
-  chatCache: NameCache,
-): BaleEvent | null {
-  const senderKey = String(msg.senderUid);
-  const peerKey = String(msg.peerId);
-
-  const sender = userCache[senderKey] ?? "Unknown";
-  const chatName = chatCache[peerKey] ?? "Unknown Chat";
-  const chatUrl = `https://web.bale.ai/contacts?uid=${msg.peerId}`;
-
+export function parseDecodedMessage(msg: DecodedMessage): BaleEvent {
   return {
     type: "message",
-    timestamp: new Date(Number(msg.date) * 1000),
-    sender,
-    chatName,
+    timestamp: new Date(Number(msg.date)),
+    source: sourceLabel(msg.peerType),
     preview: msg.preview || undefined,
-    chatUrl,
+    chatUrl: `https://web.bale.ai/contacts?uid=${msg.peerId}`,
   };
 }

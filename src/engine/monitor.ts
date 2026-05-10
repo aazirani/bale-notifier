@@ -2,12 +2,11 @@ import type { AppConfig, BaleEvent, NotificationChannel, DecodedMessage } from "
 import { launchBrowser, navigateToBale } from "./browser.js";
 import { WS_HOOK_SCRIPT } from "./ws-hook.js";
 import { FrameDecoder } from "./decoder.js";
-import { parseDecodedMessage, type NameCache } from "./event-parser.js";
+import { parseDecodedMessage } from "./event-parser.js";
 import { startCallDetection } from "./call-detector.js";
 import { createChannel } from "../channels/index.js";
 import { logger } from "../logger.js";
 import { RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_MAX_BACKOFF_MS, KEEPALIVE_INTERVAL_MS, KEEPALIVE_CHECK_INTERVAL_MS, NOTIFICATION_MAX_RETRIES } from "../constants.js";
-import type { Page } from "puppeteer";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
@@ -78,8 +77,7 @@ export class BaleMonitor {
           const event: BaleEvent = {
             type: "call",
             timestamp: new Date(),
-            sender: callerName,
-            chatName: callerName,
+            source: `Call from ${callerName}`,
           };
           await this.dispatch(event);
         }
@@ -124,61 +122,12 @@ export class BaleMonitor {
     }
   }
 
-  private async handleDecodedMessage(page: Page, msg: DecodedMessage): Promise<void> {
+  private async handleDecodedMessage(_page: unknown, msg: DecodedMessage): Promise<void> {
     try {
-      const { userCache, chatCache } = await this.resolveNameCaches(page);
-      const event = parseDecodedMessage(msg, userCache, chatCache);
-      if (event) {
-        await this.dispatch(event);
-      }
+      const event = parseDecodedMessage(msg);
+      await this.dispatch(event);
     } catch (err) {
-      logger.warn("Failed to resolve names or dispatch event:", err);
-    }
-  }
-
-  private async resolveNameCaches(page: Page): Promise<{ userCache: NameCache; chatCache: NameCache }> {
-    try {
-      const caches = await page.evaluate(() => {
-        const rootEl = document.getElementById("root");
-        if (!rootEl) return { userCache: {}, chatCache: {} };
-
-        const fiberKey = Object.keys(rootEl).find((k) => k.startsWith("__reactFiber"));
-        if (!fiberKey) return { userCache: {}, chatCache: {} };
-
-        let fiber = (rootEl as any)[fiberKey];
-        let store: any = null;
-        for (let i = 0; i < 50 && fiber && !store; i++) {
-          const state = fiber.memoizedState || fiber.stateNode?.memoizedState;
-          if (state?.store) store = state.store;
-          if (state?.memoizedState?.store) store = state.memoizedState.store;
-          fiber = fiber.return;
-        }
-
-        if (!store) return { userCache: {}, chatCache: {} };
-
-        const state = store.getState();
-        const userCache: Record<string, string> = {};
-        const chatCache: Record<string, string> = {};
-
-        if (state.Users) {
-          try {
-            const users = state.Users instanceof Map ? state.Users : new Map(Object.entries(state.Users));
-            users.forEach((user: any, key: any) => {
-              const name = user?.firstName || user?.lastName || user?.displayName;
-              if (name) userCache[String(user?.userId || user?.id || key)] = name;
-            });
-          } catch {}
-        }
-
-        return { userCache, chatCache };
-      });
-
-      return {
-        userCache: caches.userCache,
-        chatCache: caches.chatCache,
-      };
-    } catch {
-      return { userCache: {}, chatCache: {} };
+      logger.warn("Failed to dispatch event:", err);
     }
   }
 
@@ -186,7 +135,7 @@ export class BaleMonitor {
     for (let attempt = 1; attempt <= NOTIFICATION_MAX_RETRIES; attempt++) {
       try {
         await this.channel.send(event);
-        logger.info(`[${event.timestamp.toISOString()}] Notified: ${event.type} from ${event.sender ?? event.chatName}`);
+        logger.info(`[${event.timestamp.toISOString()}] Notified: ${event.type} in ${event.source}`);
         return;
       } catch (err) {
         if (attempt < NOTIFICATION_MAX_RETRIES) {

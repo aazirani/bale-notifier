@@ -5,14 +5,12 @@ function buildEmbed(event: BaleEvent) {
 
   switch (event.type) {
     case "message":
-      if (event.sender) fields.push({ name: "From", value: event.sender, inline: true });
-      fields.push({ name: "Chat", value: event.chatName, inline: true });
+      fields.push({ name: "Source", value: event.source, inline: true });
       if (event.preview) fields.push({ name: "Preview", value: event.preview });
       return { title: "New Bale Message", color: 0x229ed9, fields };
 
     case "call":
-      if (event.sender) fields.push({ name: "From", value: event.sender, inline: true });
-      fields.push({ name: "Chat", value: event.chatName, inline: true });
+      fields.push({ name: "Source", value: event.source, inline: true });
       return {
         title: `${event.callType === "video" ? "Video" : "Voice"} Call from Bale`,
         color: 0xff0000,
@@ -20,7 +18,6 @@ function buildEmbed(event: BaleEvent) {
       };
 
     case "group_notification":
-      fields.push({ name: "Group", value: event.chatName, inline: true });
       if (event.preview) fields.push({ name: "Details", value: event.preview });
       return { title: "Bale Group Notification", color: 0x229ed9, fields };
   }

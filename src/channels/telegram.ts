@@ -6,8 +6,7 @@ function formatEvent(event: BaleEvent): { text: string; link?: string } {
     case "message":
       return {
         text: [
-          "New Bale Message",
-          `From: ${event.sender ?? "Unknown"}`,
+          `New Bale Message in ${event.source}`,
           event.preview ? event.preview : "",
         ].filter(Boolean).join("\n"),
         link: event.chatUrl,
@@ -15,17 +14,13 @@ function formatEvent(event: BaleEvent): { text: string; link?: string } {
 
     case "call":
       return {
-        text: [
-          `${event.callType === "video" ? "Video" : "Voice"} Call from Bale`,
-          `From: ${event.sender ?? "Unknown"}`,
-        ].join("\n"),
+        text: `${event.callType === "video" ? "Video" : "Voice"} ${event.source}`,
       };
 
     case "group_notification":
       return {
         text: [
-          "Bale Group Notification",
-          `From: ${event.chatName}`,
+          `Bale Group Notification`,
           event.preview ?? "New activity",
         ].join("\n"),
         link: event.chatUrl,

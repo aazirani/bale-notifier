@@ -6,12 +6,17 @@ export const WS_HOOK_SCRIPT = `
     var ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
 
     ws.addEventListener('message', function(event) {
-      if (event.data instanceof ArrayBuffer) {
+      var data = event.data;
+      if (data instanceof Blob) {
+        data.arrayBuffer().then(function(buf) {
+          try {
+            window.__baleOnFrame(Array.from(new Uint8Array(buf)));
+          } catch (e) {}
+        });
+      } else if (data instanceof ArrayBuffer) {
         try {
-          window.__baleOnFrame(Array.from(new Uint8Array(event.data)));
-        } catch (e) {
-          // __baleOnFrame might not be ready yet during handshake
-        }
+          window.__baleOnFrame(Array.from(new Uint8Array(data)));
+        } catch (e) {}
       }
     });
 

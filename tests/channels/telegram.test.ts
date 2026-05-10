@@ -11,7 +11,6 @@ describe("TelegramChannel", () => {
 
   function createChannel() {
     const channel = new TelegramChannel({ botToken: "123:ABC", chatId: 999 });
-    // Inject mock bot instead of creating real one
     channel["bot"] = {
       sendMessage: mockSendMessage,
       getMe: vi.fn().mockResolvedValue({ id: 123, username: "testbot" })
@@ -24,9 +23,9 @@ describe("TelegramChannel", () => {
     const event: BaleEvent = {
       type: "message",
       timestamp: new Date("2026-05-08T10:00:00Z"),
-      sender: "Ali Rezaei",
-      chatName: "Work Group",
+      source: "Private Chat",
       preview: "Hey, are you coming?",
+      chatUrl: "https://web.bale.ai/contacts?uid=100",
     };
 
     await channel.send(event);
@@ -34,7 +33,7 @@ describe("TelegramChannel", () => {
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
     const [chatId, text, options] = mockSendMessage.mock.calls[0];
     expect(chatId).toBe(999);
-    expect(text).toContain("Ali Rezaei");
+    expect(text).toContain("Private Chat");
     expect(text).toContain("Hey, are you coming?");
     expect(options).toEqual({ disable_web_page_preview: true });
   });
@@ -44,8 +43,7 @@ describe("TelegramChannel", () => {
     const event: BaleEvent = {
       type: "call",
       timestamp: new Date("2026-05-08T10:00:00Z"),
-      sender: "Sara Ahmadi",
-      chatName: "Direct",
+      source: "Call from Sara Ahmadi",
       callType: "voice",
     };
 

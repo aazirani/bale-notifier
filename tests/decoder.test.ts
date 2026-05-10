@@ -13,75 +13,72 @@ function makeContentBytes(opts: { text?: string; type?: "text" | "document" | "d
     return MessageContent.encode(MessageContent.create({ documentMessage: new Uint8Array([1, 2, 3]) })).finish();
   }
   if (t === "deleted") {
-    return MessageContent.encode(MessageContent.create({ deletedMessage: new Uint8Array(0) })).finish();
+    return MessageContent.encode(MessageContent.create({ deletedMessage: new Uint8Array([1]) })).finish();
   }
   if (t === "empty") {
-    return MessageContent.encode(MessageContent.create({ emptyMessage: new Uint8Array(0) })).finish();
+    return MessageContent.encode(MessageContent.create({ emptyMessage: new Uint8Array([1]) })).finish();
   }
-  // "none" — empty MessageContent with no fields set
   return MessageContent.encode(MessageContent.create({})).finish();
 }
 
-function makeDialogBytes(opts: {
-  peerType?: number;
-  peerId?: number;
-  senderUid?: number;
+function makeNewMessageBytes(opts: {
+  fromType?: number;
+  fromId?: number;
+  toId?: number;
   rid?: number;
-  unreadCount?: number;
   date?: number;
   text?: string;
   contentType?: "text" | "document" | "deleted" | "empty" | "none";
   includeMessage?: boolean;
 }): Uint8Array {
-  const { Dialog, Peer } = schemas;
+  const { NewMessage, Peer } = schemas;
 
-  const peer = Peer.create({
-    type: opts.peerType ?? 1,
-    id: opts.peerId ?? 100,
-    accessHash: "200",
-  });
+  const from = Peer.create({ type: opts.fromType ?? 1, id: opts.fromId ?? 100 });
+  const to = Peer.create({ type: 1, id: opts.toId ?? 200 });
 
-  const msgBytes = (opts.includeMessage !== false)
+  const message = opts.includeMessage !== false
     ? makeContentBytes({ text: opts.text, type: opts.contentType ?? (opts.text !== undefined ? "text" : "none") })
     : undefined;
 
-  const dialog = Dialog.create({
-    peer,
-    unreadCount: opts.unreadCount ?? 1,
-    sortDate: String(opts.date ?? 1700000000),
-    senderUid: String(opts.senderUid ?? 50),
+  const newMsg = NewMessage.create({
+    from,
+    senderUid: String(opts.fromId ?? 100),
+    date: String(opts.date ?? 1778401706519),
     rid: String(opts.rid ?? 999),
-    date: String(opts.date ?? 1700000000),
-    message: msgBytes,
+    message,
+    to,
   });
 
-  return Dialog.encode(dialog).finish();
+  return NewMessage.encode(newMsg).finish();
 }
 
-function makeEnvelopeBytes(dialogBytes: Uint8Array): Uint8Array {
-  const { ServerEnvelope, Update } = schemas;
-  const update = Update.create({ update: dialogBytes });
+function makeEnvelopeBytes(newMessageBytes: Uint8Array): Uint8Array {
+  const { ServerEnvelope, Update, UpdatePayload, NewMessageUpdate } = schemas;
+  // Inner: NewMessageUpdate with field 55 = newMessage bytes
+  const innerBytes = NewMessageUpdate.encode(NewMessageUpdate.create({ newMessage: newMessageBytes })).finish();
+  // Outer: UpdatePayload with field 1 = inner bytes
+  const payloadBytes = UpdatePayload.encode(UpdatePayload.create({ content: innerBytes })).finish();
+  const update = Update.create({ update: payloadBytes });
   const envelope = ServerEnvelope.create({ update });
   return ServerEnvelope.encode(envelope).finish();
 }
 
 function makePongEnvelopeBytes(): Uint8Array {
   const { ServerEnvelope } = schemas;
-  const envelope = ServerEnvelope.create({ pong: new Uint8Array(0) });
-  return ServerEnvelope.encode(envelope).finish();
+  return ServerEnvelope.encode(ServerEnvelope.create({ pong: new Uint8Array(0) })).finish();
 }
 
 describe("FrameDecoder", () => {
-  it("decodes a Dialog update from a ServerEnvelope", () => {
+  it("decodes a NewMessage update from a ServerEnvelope", () => {
     const decoder = new FrameDecoder();
-    const dialogBytes = makeDialogBytes({ text: "Hello", unreadCount: 2, rid: 1001 });
-    const envelopeBytes = makeEnvelopeBytes(dialogBytes);
-    const result = decoder.decode(envelopeBytes);
+    const msgBytes = makeNewMessageBytes({ text: "Hello", rid: 1001, date: 1778401706519 });
+    const result = decoder.decode(makeEnvelopeBytes(msgBytes));
     expect(result).not.toBeNull();
     expect(result!.preview).toBe("Hello");
-    expect(result!.unreadCount).toBe(2);
     expect(result!.rid).toBe(1001n);
     expect(result!.messageType).toBe("text");
+    expect(result!.senderUid).toBe(100n);
+    expect(result!.peerId).toBe(200n);
   });
 
   it("returns null for non-update envelopes (pong)", () => {
@@ -90,28 +87,26 @@ describe("FrameDecoder", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null for dialogs with zero unread count", () => {
+  it("returns null for updates without newMessage (field 55)", () => {
     const decoder = new FrameDecoder();
-    const dialogBytes = makeDialogBytes({ unreadCount: 0, text: "Hi" });
-    const result = decoder.decode(makeEnvelopeBytes(dialogBytes));
+    const { ServerEnvelope, Update, UpdatePayload } = schemas;
+    const payloadBytes = UpdatePayload.encode(UpdatePayload.create({})).finish();
+    const envelope = ServerEnvelope.create({ update: Update.create({ update: payloadBytes }) });
+    const result = decoder.decode(ServerEnvelope.encode(envelope).finish());
     expect(result).toBeNull();
   });
 
   it("deduplicates by rid", () => {
     const decoder = new FrameDecoder();
-    const dialogBytes = makeDialogBytes({ text: "Hello", unreadCount: 1, rid: 42 });
-    const result1 = decoder.decode(makeEnvelopeBytes(dialogBytes));
-    expect(result1).not.toBeNull();
-    const result2 = decoder.decode(makeEnvelopeBytes(dialogBytes));
-    expect(result2).toBeNull();
+    const envelopeBytes = makeEnvelopeBytes(makeNewMessageBytes({ text: "Hello", rid: 42 }));
+    expect(decoder.decode(envelopeBytes)).not.toBeNull();
+    expect(decoder.decode(envelopeBytes)).toBeNull();
   });
 
   it("handles different rid values without dedup", () => {
     const decoder = new FrameDecoder();
-    const bytes1 = makeDialogBytes({ text: "First", unreadCount: 1, rid: 100 });
-    const bytes2 = makeDialogBytes({ text: "Second", unreadCount: 1, rid: 101 });
-    const result1 = decoder.decode(makeEnvelopeBytes(bytes1));
-    const result2 = decoder.decode(makeEnvelopeBytes(bytes2));
+    const result1 = decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ text: "First", rid: 100 })));
+    const result2 = decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ text: "Second", rid: 101 })));
     expect(result1).not.toBeNull();
     expect(result2).not.toBeNull();
     expect(result1!.rid).toBe(100n);
@@ -120,17 +115,14 @@ describe("FrameDecoder", () => {
 
   it("truncates long text previews to 100 characters", () => {
     const decoder = new FrameDecoder();
-    const longText = "A".repeat(200);
-    const dialogBytes = makeDialogBytes({ text: longText, unreadCount: 1, rid: 200 });
-    const result = decoder.decode(makeEnvelopeBytes(dialogBytes));
+    const result = decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ text: "A".repeat(200), rid: 200 })));
     expect(result).not.toBeNull();
     expect(result!.preview.length).toBe(100);
   });
 
   it("returns 'unknown' messageType for unrecognized content", () => {
     const decoder = new FrameDecoder();
-    const dialogBytes = makeDialogBytes({ contentType: "none", unreadCount: 1, rid: 300 });
-    const result = decoder.decode(makeEnvelopeBytes(dialogBytes));
+    const result = decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ contentType: "none", rid: 300 })));
     expect(result).not.toBeNull();
     expect(result!.messageType).toBe("unknown");
     expect(result!.preview).toBe("[Message]");
@@ -138,50 +130,30 @@ describe("FrameDecoder", () => {
 
   it("returns 'document' messageType for document messages", () => {
     const decoder = new FrameDecoder();
-    const dialogBytes = makeDialogBytes({ contentType: "document", unreadCount: 1, rid: 400 });
-    const result = decoder.decode(makeEnvelopeBytes(dialogBytes));
+    const result = decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ contentType: "document", rid: 400 })));
+    expect(result).not.toBeNull();
     expect(result!.messageType).toBe("document");
     expect(result!.preview).toBe("[File]");
   });
 
-  it("classifies deleted messages correctly", () => {
+  it("skips deleted messages", () => {
     const decoder = new FrameDecoder();
-    const dialogBytes = makeDialogBytes({ contentType: "deleted", unreadCount: 1, rid: 500 });
-    const result = decoder.decode(makeEnvelopeBytes(dialogBytes));
-    // Empty deletedMessage bytes won't be classified as deleted
-    // This test documents the current behavior
-    expect(result).not.toBeNull();
-  });
-
-  it("classifies empty messages correctly", () => {
-    const decoder = new FrameDecoder();
-    const dialogBytes = makeDialogBytes({ contentType: "empty", unreadCount: 1, rid: 501 });
-    const result = decoder.decode(makeEnvelopeBytes(dialogBytes));
-    // Empty emptyMessage bytes won't be classified as empty
-    // This test documents the current behavior
-    expect(result).not.toBeNull();
+    const result = decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ contentType: "deleted", rid: 500 })));
+    expect(result).toBeNull();
   });
 
   it("gracefully handles undecodable frames", () => {
     const decoder = new FrameDecoder();
-    const garbage = new Uint8Array([0xFF, 0xFF, 0xFF]);
-    const result = decoder.decode(garbage);
-    expect(result).toBeNull();
+    expect(decoder.decode(new Uint8Array([0xFF, 0xFF, 0xFF]))).toBeNull();
   });
 
   it("evicts old rids when buffer is full", () => {
     const decoder = new FrameDecoder();
-    // Add 100 items (buffer size is 100)
     for (let i = 0; i < 100; i++) {
-      const bytes = makeDialogBytes({ text: `msg${i}`, unreadCount: 1, rid: 1000 + i });
-      decoder.decode(makeEnvelopeBytes(bytes));
+      decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ text: `msg${i}`, rid: 1000 + i })));
     }
-    // Add one more item to evict the first one
-    const bytes1100 = makeDialogBytes({ text: "msg100", unreadCount: 1, rid: 1100 });
-    decoder.decode(makeEnvelopeBytes(bytes1100));
-    // Now rid 1000 should have been evicted
-    const bytes1000 = makeDialogBytes({ text: "reseen", unreadCount: 1, rid: 1000 });
-    const result = decoder.decode(makeEnvelopeBytes(bytes1000));
+    decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ text: "msg100", rid: 1100 })));
+    const result = decoder.decode(makeEnvelopeBytes(makeNewMessageBytes({ text: "reseen", rid: 1000 })));
     expect(result).not.toBeNull();
   });
 });

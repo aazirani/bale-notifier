@@ -19,8 +19,7 @@ describe("DiscordChannel", () => {
     const event: BaleEvent = {
       type: "message",
       timestamp: new Date("2026-05-08T10:00:00Z"),
-      sender: "Ali Rezaei",
-      chatName: "Work Group",
+      source: "Group",
       preview: "Hey, are you coming?",
     };
 
@@ -32,7 +31,7 @@ describe("DiscordChannel", () => {
     );
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.embeds[0].title).toBe("New Bale Message");
-    expect(body.embeds[0].fields[0].value).toBe("Ali Rezaei");
+    expect(body.embeds[0].fields[0].value).toBe("Group");
   });
 
   it("sends a call event as a Discord embed", async () => {
@@ -40,8 +39,7 @@ describe("DiscordChannel", () => {
     const event: BaleEvent = {
       type: "call",
       timestamp: new Date("2026-05-08T10:00:00Z"),
-      sender: "Sara Ahmadi",
-      chatName: "Direct",
+      source: "Call from Sara",
       callType: "video",
     };
 
