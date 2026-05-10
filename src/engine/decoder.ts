@@ -36,11 +36,11 @@ function classifyContent(rawMessage: Uint8Array): ContentResult {
       return { messageType: "unknown", preview: "[Message]", skip: false };
     }
 
-    const content = schemas.MessageContent.decode(rawMessage);
+    const content: any = schemas.MessageContent.decode(rawMessage);
 
     // Check text messages first (they have actual text content)
-    if (content.textMessage && (content.textMessage as any).text) {
-      const text = (content.textMessage as any).text as string;
+    if (content.textMessage && content.textMessage.text) {
+      const text: string = content.textMessage.text;
       return {
         messageType: "text",
         preview: text.length > PREVIEW_MAX_LENGTH ? text.slice(0, PREVIEW_MAX_LENGTH) : text,
@@ -48,8 +48,8 @@ function classifyContent(rawMessage: Uint8Array): ContentResult {
       };
     }
 
-    if (content.longTextMessage && (content.longTextMessage as any).text) {
-      const text = (content.longTextMessage as any).text as string;
+    if (content.longTextMessage && content.longTextMessage.text) {
+      const text: string = content.longTextMessage.text;
       return {
         messageType: "long_text",
         preview: text.length > PREVIEW_MAX_LENGTH ? text.slice(0, PREVIEW_MAX_LENGTH) : text,
@@ -94,11 +94,11 @@ export class FrameDecoder {
 
   decode(rawBytes: Uint8Array): DecodedMessage | null {
     try {
-      const envelope = schemas.ServerEnvelope.decode(rawBytes);
+      const envelope: any = schemas.ServerEnvelope.decode(rawBytes);
 
       if (!envelope.update) return null;
 
-      let dialog;
+      let dialog: any;
       try {
         dialog = schemas.Dialog.decode(envelope.update.update);
       } catch {
