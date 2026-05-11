@@ -4,7 +4,7 @@
 
 case "$1" in
   add-user|remove-user|list-users|status)
-    exec node /app/dist/cli.js "$1"
+    exec node /app/dist/main.js "$1"
     ;;
   "")
     exec node /app/dist/main.js
