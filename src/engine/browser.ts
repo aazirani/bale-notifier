@@ -1,10 +1,7 @@
 import puppeteer, { type Browser, type Page } from "puppeteer";
-import type { BrowserContext } from "puppeteer";
 import fs from "node:fs";
 import { logger } from "../logger.js";
 import { BALE_URL, BROWSER_LAUNCH_ARGS, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, NAVIGATION_TIMEOUT_MS, SPA_RENDER_TIMEOUT_MS, CONTENT_RENDER_TIMEOUT_MS } from "../constants.js";
-import { loadCookies, saveCookies } from "../cookies.js";
-import { saveLocalStorage, loadLocalStorage } from "../storage.js";
 
 export interface BrowserSession {
   browser: Browser;
@@ -13,7 +10,6 @@ export interface BrowserSession {
 }
 
 export async function launchBrowser(sessionDir: string): Promise<BrowserSession> {
-  // Clean up stale Chromium lock files from previous runs
   const lockFile = `${sessionDir}/SingletonLock`;
   try { fs.unlinkSync(lockFile); } catch (err) { logger.debug("No stale lock file to clean:", err); }
 
@@ -33,13 +29,11 @@ export async function launchBrowser(sessionDir: string): Promise<BrowserSession>
 export async function navigateToBale(page: Page): Promise<void> {
   await page.goto(BALE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
 
-  // Wait for the React SPA to finish loading (splash screen to disappear)
   await page.waitForFunction(
     `!document.querySelector('.splash-container') && !document.querySelector('.spin')`,
     { timeout: SPA_RENDER_TIMEOUT_MS },
   );
 
-  // Wait for actual content to render (chat list or login form)
   await page.waitForFunction(
     `document.querySelectorAll('span, button, input').length > 5`,
     { timeout: CONTENT_RENDER_TIMEOUT_MS },
@@ -50,75 +44,17 @@ export async function isLoggedIn(page: Page): Promise<boolean> {
   return !page.url().includes("/login");
 }
 
-// --- Shared Browser Functions ---
-
-export async function launchSharedBrowser(): Promise<Browser> {
-  return puppeteer.launch({
-    headless: true,
-    args: BROWSER_LAUNCH_ARGS,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-  });
-}
-
-export async function createUserContext(
-  browser: Browser,
-  sessionDir: string,
-): Promise<{ context: BrowserContext; page: Page; close: () => Promise<void> }> {
-  const context = await browser.createBrowserContext();
-  const page = await context.newPage();
-  await page.setViewport({ width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT });
-
-  // Restore saved cookies
-  const cookies = await loadCookies(sessionDir);
-  if (cookies.length > 0) {
-    await page.setCookie(...(cookies as any));
-  }
-
-  // Restore saved localStorage
-  const lsEntries = await loadLocalStorage(sessionDir);
-  if (lsEntries.length > 0) {
-    await page.evaluateOnNewDocument((entries: { key: string; value: string }[]) => {
-      for (const { key, value } of entries) {
-        try { localStorage.setItem(key, value); } catch {}
-      }
-    }, lsEntries);
-  }
-
-  const close = async () => {
-    // Save cookies before closing
-    try {
-      const currentCookies = await page.cookies();
-      await saveCookies(currentCookies as any, sessionDir);
-    } catch {
-      // Page may already be closed
-    }
-    // Save localStorage before closing
-    try {
-      const entries = await page.evaluate(() => {
-        const items: { key: string; value: string }[] = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (key) items.push({ key, value: localStorage.getItem(key) ?? "" });
-        }
-        return items;
-      });
-      await saveLocalStorage(entries, sessionDir);
-    } catch {
-      // Page may already be closed
-    }
-    await context.close();
-  };
-
-  return { context, page, close };
-}
-
 export async function launchReloginBrowser(
   display: string,
   sessionDir: string,
-): Promise<{ browser: Browser; page: Page }> {
+): Promise<BrowserSession> {
+  const lockFile = `${sessionDir}/SingletonLock`;
+  try { fs.unlinkSync(lockFile); } catch {}
+
   const browser = await puppeteer.launch({
     headless: false,
     args: [...BROWSER_LAUNCH_ARGS, `--display=${display}`],
+    userDataDir: sessionDir,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     env: { ...process.env, DISPLAY: display },
   });
@@ -126,11 +62,5 @@ export async function launchReloginBrowser(
   const page = await browser.newPage();
   await page.setViewport({ width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT });
 
-  // Restore cookies so the user sees their Bale session
-  const cookies = await loadCookies(sessionDir);
-  if (cookies.length > 0) {
-    await page.setCookie(...(cookies as any));
-  }
-
-  return { browser, page };
+  return { browser, page, close: () => browser.close() };
 }

@@ -1,14 +1,12 @@
-import type { Browser, Page } from "puppeteer";
+import type { Page } from "puppeteer";
 import type { AppConfig, BaleEvent, NotificationChannel, DecodedMessage } from "../types.js";
-import { createUserContext, navigateToBale, launchReloginBrowser } from "./browser.js";
+import { launchBrowser, launchReloginBrowser, navigateToBale } from "./browser.js";
 import { WS_HOOK_SCRIPT } from "./ws-hook.js";
 import { FrameDecoder } from "./decoder.js";
 import { parseDecodedMessage } from "./event-parser.js";
 import { startCallDetection } from "./call-detector.js";
 import { createChannel } from "../channels/index.js";
-import { NoVncSession, isXvfbRunning } from "../setup/novnc.js";
-import { saveCookies } from "../cookies.js";
-import { saveLocalStorage } from "../storage.js";
+import { NoVncSession } from "../setup/novnc.js";
 import { logger } from "../logger.js";
 import {
   RECONNECT_INITIAL_BACKOFF_MS,
@@ -33,11 +31,10 @@ export class BaleMonitor {
   private reloginAttempts = 0;
   private static readonly MAX_RELOGIN_ATTEMPTS = 3;
   private static readonly RELOGIN_COOLDOWN_MS = RELOGIN_COOLDOWN_MS;
-  private contextClose: (() => Promise<void>) | null = null;
+  private sessionClose: (() => Promise<void>) | null = null;
 
   constructor(
     private config: AppConfig,
-    private sharedBrowser: Browser,
     private userId: string,
     private novncPort: number,
     private vncPort: number,
@@ -67,18 +64,16 @@ export class BaleMonitor {
 
   stop(): void {
     this.running = false;
-    this.contextClose?.().catch((err) => logger.debug(`[${this.userId}] Context close error:`, err));
+    this.sessionClose?.().catch((err) => logger.debug(`[${this.userId}] Session close error:`, err));
   }
 
   private async runSession(): Promise<void> {
-    const session = await createUserContext(this.sharedBrowser, this.config.bale.sessionDir);
-    this.contextClose = session.close;
+    const session = await launchBrowser(this.config.bale.sessionDir);
+    this.sessionClose = session.close;
 
     try {
-      // Inject WS hook BEFORE navigating to Bale
       await session.page.evaluateOnNewDocument(WS_HOOK_SCRIPT);
 
-      // Expose the callback for the WS hook to call
       const decoder = new FrameDecoder();
       await session.page.exposeFunction("__baleOnFrame", (rawBytes: number[]) => {
         const bytes = new Uint8Array(rawBytes);
@@ -104,7 +99,7 @@ export class BaleMonitor {
 
       if (isLoginPage) {
         await session.close();
-        this.contextClose = null;
+        this.sessionClose = null;
 
         this.reloginAttempts++;
         if (this.reloginAttempts > BaleMonitor.MAX_RELOGIN_ATTEMPTS) {
@@ -128,7 +123,6 @@ export class BaleMonitor {
         return;
       }
 
-      // Start DOM-based call detection
       const stopCallDetection = await startCallDetection(session.page, async (callerName) => {
         logger.info(`[${this.userId}] Detected: incoming call from ${callerName}`);
         if (this.config.notifications.calls) {
@@ -155,13 +149,12 @@ export class BaleMonitor {
           await session.page.evaluate("document.title");
         } catch {
           disconnected = true;
-          session.context.close().catch((err: unknown) => logger.debug(`[${this.userId}] Context close on disconnect:`, err));
         }
       }, KEEPALIVE_INTERVAL_MS);
 
       await new Promise<void>((resolve) => {
-        session.context.on("close", () => {
-          logger.info(`[${this.userId}] Browser context closed. Reconnecting...`);
+        session.browser.on("disconnected", () => {
+          logger.info(`[${this.userId}] Browser disconnected. Reconnecting...`);
           if (keepalive) clearInterval(keepalive);
           resolve();
         });
@@ -176,9 +169,9 @@ export class BaleMonitor {
 
       await stopCallDetection();
     } finally {
-      if (this.contextClose) {
+      if (this.sessionClose) {
         await session.close();
-        this.contextClose = null;
+        this.sessionClose = null;
       }
     }
   }
@@ -187,15 +180,12 @@ export class BaleMonitor {
     logger.warn(`[${this.userId}] Bale session expired. Starting re-login flow...\n`);
 
     const headless = !process.env.DISPLAY || process.env.DISPLAY === ":99" || process.env.DISPLAY === "";
-    const xvfbAvailable = isXvfbRunning();
 
     let novncUrl = "";
     let novnc: NoVncSession | null = null;
-    let usedSharedBrowser = false;
-    let reloginPage: Page;
-    let reloginClose: (() => Promise<void>) | null = null;
+    let reloginSession: { page: Page; close: () => Promise<void> };
 
-    if (headless && xvfbAvailable) {
+    if (headless) {
       try {
         novnc = new NoVncSession(this.novncPort, this.vncPort);
         novncUrl = await novnc.start();
@@ -222,62 +212,36 @@ export class BaleMonitor {
 
     if (novnc) {
       const display = novnc.display;
-      const { browser, page } = await launchReloginBrowser(display, this.config.bale.sessionDir);
-      reloginPage = page;
-      reloginClose = () => browser.close();
-    } else if (this.sharedBrowser) {
-      logger.warn(`[${this.userId}] No noVNC available. Attempting headless re-login...`);
-      const session = await createUserContext(this.sharedBrowser, this.config.bale.sessionDir);
-      reloginPage = session.page;
-      reloginClose = session.close;
-      usedSharedBrowser = true;
+      reloginSession = await launchReloginBrowser(display, this.config.bale.sessionDir);
     } else {
-      logger.error(`[${this.userId}] No browser available for re-login. Skipping.`);
-      return;
+      reloginSession = await launchBrowser(this.config.bale.sessionDir);
     }
 
     try {
-      await reloginPage.goto(BALE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+      await reloginSession.page.goto(BALE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
 
       try {
-        await reloginPage.waitForFunction(
+        await reloginSession.page.waitForFunction(
           `!document.querySelector('.splash-container') && !document.querySelector('.spin')`,
           { timeout: SPA_RENDER_TIMEOUT_MS },
         );
       } catch { /* ignore render timeout */ }
 
       try {
-        await reloginPage.waitForFunction(
+        await reloginSession.page.waitForFunction(
           `document.querySelectorAll('span, button, input').length > 5`,
           { timeout: CONTENT_RENDER_TIMEOUT_MS },
         );
       } catch { /* ignore content timeout */ }
 
       logger.info(`[${this.userId}] Waiting for re-login...`);
-      await reloginPage.waitForFunction(
+      await reloginSession.page.waitForFunction(
         `!window.location.pathname.includes('/login') && !document.body.textContent.includes('login me') && !document.body.textContent.includes('زبان')`,
         { timeout: RELOGIN_TIMEOUT_MS },
       );
       logger.info(`[${this.userId}] Re-login successful! Resuming monitoring...\n`);
-
-      const cookies = await reloginPage.cookies() as any;
-      await saveCookies(cookies, this.config.bale.sessionDir);
-
-      try {
-        const lsEntries = await reloginPage.evaluate(() => {
-          const items: { key: string; value: string }[] = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key) items.push({ key, value: localStorage.getItem(key) ?? "" });
-          }
-          return items;
-        });
-        await saveLocalStorage(lsEntries, this.config.bale.sessionDir);
-      } catch (err) {
-        logger.debug(`[${this.userId}] Could not save localStorage after re-login:`, err);
-      }
     } finally {
-      await reloginClose?.();
+      await reloginSession.close();
       novnc?.stop();
     }
   }

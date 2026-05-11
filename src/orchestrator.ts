@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Browser } from "puppeteer";
 import type { AppConfig, MasterConfig, UserState } from "./types.js";
 import { BaleMonitor } from "./engine/monitor.js";
-import { launchSharedBrowser } from "./engine/browser.js";
 import {
   discoverUsers,
   loadMasterConfig,
@@ -12,7 +10,6 @@ import {
 } from "./config.js";
 import { logger } from "./logger.js";
 import {
-  DEFAULT_NOVNC_PORT_RANGE,
   STATE_SAVE_INTERVAL_MS,
 } from "./constants.js";
 
@@ -24,7 +21,6 @@ interface UserSession {
 }
 
 export class Orchestrator {
-  private browser: Browser | null = null;
   private sessions = new Map<string, UserSession>();
   private masterConfig: MasterConfig;
   private masterConfigPath: string;
@@ -51,10 +47,6 @@ export class Orchestrator {
     if (!fs.existsSync(this.masterConfigPath)) {
       saveMasterConfig(this.masterConfigPath, this.masterConfig);
     }
-
-    logger.info("Launching shared headless browser...");
-    this.browser = await launchSharedBrowser();
-    logger.info("Shared browser launched.\n");
 
     const userIds = discoverUsers(this.usersDir);
     for (const userId of userIds) {
@@ -98,11 +90,6 @@ export class Orchestrator {
 
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-    }
-
     await this.saveState();
     logger.info("Orchestrator stopped.");
   }
@@ -143,7 +130,6 @@ export class Orchestrator {
 
   private async startUser(userId: string): Promise<void> {
     if (this.sessions.has(userId)) return;
-    if (!this.browser) return;
 
     try {
       const config = loadUserConfig(this.usersDir, userId);
@@ -152,7 +138,6 @@ export class Orchestrator {
 
       const monitor = new BaleMonitor(
         config,
-        this.browser,
         userId,
         port,
         vncPort,
