@@ -1,0 +1,24 @@
+#!/bin/sh
+# Bale Notifier CLI wrapper
+# Runs inside the container via: docker compose exec bale-notifier bale <command>
+
+case "$1" in
+  add-user|remove-user|list-users|status)
+    exec node /app/dist/cli.js "$1"
+    ;;
+  "")
+    exec node /app/dist/main.js
+    ;;
+  *)
+    echo "Usage: bale [add-user|remove-user|list-users|status]"
+    echo ""
+    echo "Commands:"
+    echo "  add-user      Add a new user (interactive setup)"
+    echo "  remove-user   Remove a user and their data"
+    echo "  list-users    List all configured users"
+    echo "  status        Show running session status"
+    echo ""
+    echo "No command starts the orchestrator."
+    exit 1
+    ;;
+esac
