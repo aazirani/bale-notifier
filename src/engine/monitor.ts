@@ -79,8 +79,13 @@ export class BaleMonitor {
       await session.page.exposeFunction("__baleOnFrame", (rawBytes: number[]) => {
         const bytes = new Uint8Array(rawBytes);
         const decoded = decoder.decode(bytes);
-        if (decoded && this.config.notifications.messages) {
-          this.handleDecodedMessage(session.page, decoded);
+        if (decoded) {
+          if (this.config.notifications.messages) {
+            this.handleDecodedMessage(session.page, decoded);
+          }
+        } else {
+          const hex = Array.from(bytes.slice(0, 8)).map(b => b.toString(16).padStart(2, "0")).join(" ");
+          logger.debug(`[${this.userId}] WS frame not decoded (${bytes.length} bytes, first 8: ${hex})`);
         }
       });
 
