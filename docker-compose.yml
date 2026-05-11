@@ -5,8 +5,9 @@ services:
     stdin_open: true
     tty: true
     restart: unless-stopped
-    # Per-user noVNC ports (6081 = first user, 6082 = second, etc.)
+    # 6080 = wizard (add-user), 6081-6090 = per-user orchestrator
     ports:
+      - "6080:6080"
       - "6081-6090:6081-6090"
     volumes:
       - ./data:/data
