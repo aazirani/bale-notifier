@@ -32,6 +32,7 @@ export class Orchestrator {
   private statePath: string;
   private stateSaveInterval: NodeJS.Timeout | null = null;
   private watcher: fs.FSWatcher | null = null;
+  private watcherTimer: NodeJS.Timeout | null = null;
 
   constructor(dataDir: string = "/data") {
     this.usersDir = path.join(dataDir, "users");
@@ -63,7 +64,11 @@ export class Orchestrator {
     logger.info(`Orchestrator started with ${userIds.length} user(s).\n`);
 
     this.watcher = fs.watch(this.usersDir, () => {
-      this.onUsersDirChange();
+      if (this.watcherTimer) clearTimeout(this.watcherTimer);
+      this.watcherTimer = setTimeout(() => {
+        this.watcherTimer = null;
+        this.onUsersDirChange();
+      }, 2000);
     });
 
     this.stateSaveInterval = setInterval(() => {
@@ -78,6 +83,10 @@ export class Orchestrator {
 
     if (this.stateSaveInterval) {
       clearInterval(this.stateSaveInterval);
+    }
+    if (this.watcherTimer) {
+      clearTimeout(this.watcherTimer);
+      this.watcherTimer = null;
     }
     this.watcher?.close();
 
@@ -198,6 +207,14 @@ export class Orchestrator {
 
     for (const userId of currentUsers) {
       if (!runningUsers.has(userId)) {
+        const configPath = path.join(this.usersDir, userId, "config.json");
+        try {
+          const raw = fs.readFileSync(configPath, "utf-8");
+          JSON.parse(raw);
+        } catch {
+          logger.warn(`User directory "${userId}" has no valid config.json, skipping`);
+          continue;
+        }
         this.startUser(userId).catch((err) =>
           logger.error(`Failed to auto-start user ${userId}:`, err),
         );
