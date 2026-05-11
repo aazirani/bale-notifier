@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { logger } from "../logger.js";
 import { BALE_URL, BROWSER_LAUNCH_ARGS, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, NAVIGATION_TIMEOUT_MS, SPA_RENDER_TIMEOUT_MS, CONTENT_RENDER_TIMEOUT_MS } from "../constants.js";
 import { loadCookies, saveCookies } from "../cookies.js";
+import { saveLocalStorage, loadLocalStorage } from "../storage.js";
 
 export interface BrowserSession {
   browser: Browser;
@@ -73,11 +74,35 @@ export async function createUserContext(
     await page.setCookie(...(cookies as any));
   }
 
+  // Restore saved localStorage
+  const lsEntries = await loadLocalStorage(sessionDir);
+  if (lsEntries.length > 0) {
+    await page.evaluateOnNewDocument((entries: { key: string; value: string }[]) => {
+      for (const { key, value } of entries) {
+        try { localStorage.setItem(key, value); } catch {}
+      }
+    }, lsEntries);
+  }
+
   const close = async () => {
     // Save cookies before closing
     try {
       const currentCookies = await page.cookies();
       await saveCookies(currentCookies as any, sessionDir);
+    } catch {
+      // Page may already be closed
+    }
+    // Save localStorage before closing
+    try {
+      const entries = await page.evaluate(() => {
+        const items: { key: string; value: string }[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key) items.push({ key, value: localStorage.getItem(key) ?? "" });
+        }
+        return items;
+      });
+      await saveLocalStorage(entries, sessionDir);
     } catch {
       // Page may already be closed
     }

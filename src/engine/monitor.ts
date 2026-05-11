@@ -8,6 +8,7 @@ import { startCallDetection } from "./call-detector.js";
 import { createChannel } from "../channels/index.js";
 import { NoVncSession } from "../setup/novnc.js";
 import { saveCookies } from "../cookies.js";
+import { saveLocalStorage } from "../storage.js";
 import { logger } from "../logger.js";
 import {
   RECONNECT_INITIAL_BACKOFF_MS,
@@ -214,6 +215,21 @@ export class BaleMonitor {
 
       const cookies = await page.cookies() as any;
       await saveCookies(cookies, this.config.bale.sessionDir);
+
+      // Save localStorage from re-login browser
+      try {
+        const lsEntries = await page.evaluate(() => {
+          const items: { key: string; value: string }[] = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key) items.push({ key, value: localStorage.getItem(key) ?? "" });
+          }
+          return items;
+        });
+        await saveLocalStorage(lsEntries, this.config.bale.sessionDir);
+      } catch (err) {
+        logger.debug(`[${this.userId}] Could not save localStorage after re-login:`, err);
+      }
     } finally {
       await browser.close();
       novnc?.stop();
