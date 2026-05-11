@@ -8,3 +8,4 @@ data/
 observe-bale*.ts
 coverage/
 npm-debug.log*
+*.zip

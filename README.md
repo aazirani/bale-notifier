@@ -74,11 +74,11 @@ PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser node dist/main.js add-user
 
 ### Deploy to a Server (Quick)
 
-Download the latest zip from the [releases](https://github.com/aazirani/bale-notifier/releases) or grab it from the repo:
+Download the latest zip from the [releases](https://github.com/aazirani/bale-notifier/releases) page:
 
 ```bash
 # On your server
-curl -L -o bale-notifier.zip https://github.com/aazirani/bale-notifier/raw/main/bale-notifier.zip
+curl -L -o bale-notifier.zip https://github.com/aazirani/bale-notifier/releases/download/v1.0.0/bale-notifier.zip
 unzip bale-notifier.zip
 cd bale-notifier
 docker compose up --build -d
