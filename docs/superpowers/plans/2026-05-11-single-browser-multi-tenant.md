@@ -28,7 +28,7 @@
 |------|---------|
 | `src/types.ts` | Add `MasterConfig`, `UserState`, `relogin` event type |
 | `src/constants.ts` | Add multi-tenant constants |
-| `src/config.ts` | Add `discoverUsers`, `loadMasterConfig`, `saveMasterConfig`, `migrateSingleToMulti` |
+| `src/config.ts` | Add `discoverUsers`, `loadMasterConfig`, `saveMasterConfig` |
 | `src/engine/browser.ts` | Add `launchSharedBrowser`, `createUserContext`, `launchReloginBrowser` |
 | `src/engine/monitor.ts` | Accept shared `Browser` + `userId`, use contexts, use `NoVncSession` |
 | `src/setup/wizard.ts` | Fix `sessionDirFromConfigPath` bug, accept userId parameter |
@@ -126,7 +126,6 @@ import {
   saveMasterConfig,
   loadUserConfig,
   saveUserConfig,
-  migrateSingleToMulti,
 } from "../src/config.js";
 import type { AppConfig, MasterConfig } from "../src/types.js";
 
@@ -202,48 +201,6 @@ describe("loadUserConfig and saveUserConfig", () => {
     expect(loaded).toEqual(config);
   });
 });
-
-describe("migrateSingleToMulti", () => {
-  it("migrates existing single-user config to multi-user structure", () => {
-    const dataDir = tmpDir;
-    const singleConfig: AppConfig = {
-      bale: { sessionDir: "/data/bale-session", noVncUrl: "http://1.2.3.4:6080/vnc.html" },
-      channel: { type: "telegram", telegram: { botToken: "t", chatId: 1 } },
-      notifications: { messages: true, calls: true, groups: true },
-    };
-    fs.writeFileSync(
-      path.join(dataDir, "config.json"),
-      JSON.stringify(singleConfig),
-    );
-
-    migrateSingleToMulti(dataDir);
-
-    const usersDir = path.join(dataDir, "users");
-    expect(fs.existsSync(path.join(usersDir, "default", "config.json"))).toBe(true);
-    const loaded = loadUserConfig(usersDir, "default");
-    expect(loaded.channel.type).toBe("telegram");
-    // Original single-user config should be removed
-    expect(fs.existsSync(path.join(dataDir, "config.json"))).toBe(false);
-  });
-
-  it("does nothing if no single-user config exists", () => {
-    const dataDir = tmpDir;
-    migrateSingleToMulti(dataDir);
-    expect(fs.existsSync(path.join(dataDir, "users"))).toBe(false);
-  });
-
-  it("does nothing if multi-user structure already exists", () => {
-    const dataDir = tmpDir;
-    fs.mkdirSync(path.join(dataDir, "users", "alice"), { recursive: true });
-    fs.writeFileSync(
-      path.join(dataDir, "config.json"),
-      JSON.stringify({ bale: {} }),
-    );
-    migrateSingleToMulti(dataDir);
-    // Should NOT have moved config.json since users/ already exists
-    expect(fs.existsSync(path.join(dataDir, "config.json"))).toBe(true);
-  });
-});
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -304,18 +261,6 @@ export function saveUserConfig(usersDir: string, userId: string, config: AppConf
   const configPath = path.join(usersDir, userId, "config.json");
   saveConfig(configPath, config);
 }
-
-export function migrateSingleToMulti(dataDir: string): void {
-  const singleConfigPath = path.join(dataDir, "config.json");
-  const usersDir = path.join(dataDir, "users");
-
-  // Don't migrate if no single config or multi-user structure already exists
-  if (!fs.existsSync(singleConfigPath) || fs.existsSync(usersDir)) return;
-
-  const config = loadConfig(singleConfigPath);
-  saveUserConfig(usersDir, "default", config);
-  fs.unlinkSync(singleConfigPath);
-}
 ```
 
 Note: The existing `saveConfig` uses `configPath.substring(0, configPath.lastIndexOf("/"))` to get the directory. This works with the new paths too (`/data/users/alice/config.json` → `/data/users/alice`). No change needed.
@@ -329,7 +274,7 @@ Expected: PASS
 
 ```bash
 git add src/config.ts tests/config-multi.test.ts
-git commit -m "feat: add multi-user config functions (discoverUsers, loadMasterConfig, migrateSingleToMulti)"
+git commit -m "feat: add multi-user config functions (discoverUsers, loadMasterConfig, saveMasterConfig)"
 ```
 
 ---
@@ -1588,7 +1533,6 @@ esac
 Replace the entire file:
 
 ```typescript
-import { migrateSingleToMulti } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import { handleCli } from "./cli.js";
 import { logger } from "./logger.js";
@@ -1597,9 +1541,6 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 
 async function main(): Promise<void> {
   logger.info("Bale Notifier v2.0.0 (multi-tenant)\n");
-
-  // Auto-migrate old single-user config if present
-  migrateSingleToMulti(DATA_DIR);
 
   const orchestrator = new Orchestrator(DATA_DIR);
 

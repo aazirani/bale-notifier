@@ -199,8 +199,8 @@ With a shell alias: `alias bale='docker compose exec bale-notifier bale'`
 
 ### Upgrade Path
 
-- Existing single-user `/data/config.json` is auto-migrated to `/data/users/default/config.json` on first run
-- No manual migration needed for existing deployments
+- No migration from v1 — start a fresh container with the new image
+- Users are added via `bale add-user` after the container starts
 
 ## Resource Estimates
 
