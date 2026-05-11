@@ -1,62 +1,103 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import crypto from "node:crypto";
 import { logger } from "../logger.js";
-import { NOVNC_PORT, VNC_PORT, XVFB_SCREEN, NOVNC_STARTUP_DELAY_MS, NOVNC_WEBSOCKIFY_DELAY_MS } from "../constants.js";
+import { XVFB_SCREEN, NOVNC_STARTUP_DELAY_MS, NOVNC_WEBSOCKIFY_DELAY_MS } from "../constants.js";
 
 const DISPLAY = process.env.DISPLAY || ":99";
 
-let xvfb: ChildProcess | null = null;
-let x11vnc: ChildProcess | null = null;
-let websockify: ChildProcess | null = null;
+// Shared Xvfb — started once, reused by all NoVncSessions
+let sharedXvfb: ChildProcess | null = null;
+let xvfbStarted = false;
+
+async function ensureXvfb(): Promise<void> {
+  if (xvfbStarted) return;
+  xvfbStarted = true;
+
+  try {
+    sharedXvfb = spawn("Xvfb", [DISPLAY, "-screen", "0", XVFB_SCREEN], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    sharedXvfb.on("error", (err) => logger.debug(`[noVNC] Xvfb error: ${err.message}`));
+    await sleep(NOVNC_STARTUP_DELAY_MS);
+    logger.info("[noVNC] Xvfb: Started");
+  } catch {
+    logger.debug("[noVNC] Xvfb already running or failed to start");
+  }
+}
+
+export class NoVncSession {
+  private x11vnc: ChildProcess | null = null;
+  private websockify: ChildProcess | null = null;
+  private token = crypto.randomBytes(16).toString("hex");
+
+  constructor(
+    private readonly port: number,
+    private readonly vncPort: number,
+  ) {}
+
+  async start(): Promise<string> {
+    await ensureXvfb();
+
+    logger.info(`[noVNC] x11vnc: Starting on VNC port ${this.vncPort}...`);
+    this.x11vnc = spawn("x11vnc", [
+      "-display", DISPLAY,
+      "-nopw",
+      "-listen", "localhost",
+      "-forever",
+      "-rfbport", String(this.vncPort),
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    this.x11vnc.on("error", (err) => logger.debug(`[noVNC] x11vnc error: ${err.message}`));
+    this.x11vnc.stderr?.on("data", (d: Buffer) => {
+      const line = d.toString().trim();
+      if (line.includes("listen") || line.includes("port") || line.includes("error")) {
+        logger.info(`[noVNC] x11vnc: ${line}`);
+      }
+    });
+    await sleep(NOVNC_STARTUP_DELAY_MS);
+
+    logger.info(`[noVNC] websockify: Starting on port ${this.port}...`);
+    this.websockify = spawn("websockify", [
+      "--web", "/usr/share/novnc",
+      String(this.port),
+      `localhost:${this.vncPort}`,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    this.websockify.on("error", (err) => logger.debug(`[noVNC] websockify error: ${err.message}`));
+    this.websockify.stderr?.on("data", (d: Buffer) => {
+      logger.info(`[noVNC] websockify: ${d.toString().trim()}`);
+    });
+    await sleep(NOVNC_WEBSOCKIFY_DELAY_MS);
+
+    return `http://localhost:${this.port}/vnc.html?autoconnect=true&token=${this.token}`;
+  }
+
+  stop(): void {
+    this.x11vnc?.stderr?.removeAllListeners();
+    this.websockify?.stderr?.removeAllListeners();
+    this.websockify?.kill();
+    this.x11vnc?.kill();
+    this.websockify = null;
+    this.x11vnc = null;
+  }
+
+  get display(): string {
+    return DISPLAY;
+  }
+}
+
+// Legacy single-user functions (used by wizard during add-user)
+let activeLegacySession: NoVncSession | null = null;
 
 export async function startNoVnc(): Promise<string> {
-  logger.info("[noVNC] Xvfb: Starting...");
-  xvfb = spawn("Xvfb", [DISPLAY, "-screen", "0", XVFB_SCREEN], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  xvfb.on("error", (err) => logger.info(`[noVNC] Xvfb error: ${err.message}`));
-  await sleep(NOVNC_STARTUP_DELAY_MS);
-  logger.info("[noVNC] Xvfb: Started");
-
-  logger.info("[noVNC] x11vnc: Starting...");
-  x11vnc = spawn("x11vnc", ["-display", DISPLAY, "-nopw", "-listen", "localhost", "-forever", "-rfbport", String(VNC_PORT)], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  x11vnc.on("error", (err) => logger.info(`[noVNC] x11vnc error: ${err.message}`));
-  x11vnc.stderr?.on("data", (d: Buffer) => {
-    const line = d.toString().trim();
-    if (line.includes("listen") || line.includes("port") || line.includes("error")) {
-      logger.info(`[noVNC] x11vnc: ${line}`);
-    }
-  });
-  await sleep(NOVNC_STARTUP_DELAY_MS);
-  logger.info("[noVNC] x11vnc: Started");
-
-  logger.info(`[noVNC] websockify: Starting on port ${NOVNC_PORT}...`);
-  websockify = spawn("websockify", ["--web", "/usr/share/novnc", String(NOVNC_PORT), `localhost:${VNC_PORT}`], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  websockify.on("error", (err) => logger.info(`[noVNC] websockify error: ${err.message}`));
-  websockify.stderr?.on("data", (d: Buffer) => {
-    const line = d.toString().trim();
-    logger.info(`[noVNC] websockify: ${line}`);
-  });
-  await sleep(NOVNC_WEBSOCKIFY_DELAY_MS);
-  logger.info("[noVNC] websockify: Started");
-
-  const url = `http://localhost:${NOVNC_PORT}/vnc.html?autoconnect=true`;
-  return url;
+  const port = Number(process.env.NOVNC_PORT) || 6080;
+  const vncPort = Number(process.env.VNC_PORT) || 5900;
+  const session = new NoVncSession(port, vncPort);
+  activeLegacySession = session;
+  return session.start();
 }
 
 export function stopNoVnc(): void {
-  // Detach stderr listeners first to prevent traceback noise during interactive prompts
-  x11vnc?.stderr?.removeAllListeners();
-  websockify?.stderr?.removeAllListeners();
-  websockify?.kill();
-  x11vnc?.kill();
-  xvfb?.kill();
-  websockify = null;
-  x11vnc = null;
-  xvfb = null;
+  activeLegacySession?.stop();
+  activeLegacySession = null;
 }
 
 function sleep(ms: number): Promise<void> {
