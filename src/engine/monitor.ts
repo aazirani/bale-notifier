@@ -1,12 +1,13 @@
-import puppeteer from "puppeteer";
+import type { Browser } from "puppeteer";
 import type { AppConfig, BaleEvent, NotificationChannel, DecodedMessage } from "../types.js";
-import { launchBrowser, navigateToBale } from "./browser.js";
+import { createUserContext, navigateToBale, launchReloginBrowser } from "./browser.js";
 import { WS_HOOK_SCRIPT } from "./ws-hook.js";
 import { FrameDecoder } from "./decoder.js";
 import { parseDecodedMessage } from "./event-parser.js";
 import { startCallDetection } from "./call-detector.js";
 import { createChannel } from "../channels/index.js";
-import { startNoVnc, stopNoVnc } from "../setup/novnc.js";
+import { NoVncSession } from "../setup/novnc.js";
+import { saveCookies } from "../cookies.js";
 import { logger } from "../logger.js";
 import {
   RECONNECT_INITIAL_BACKOFF_MS,
@@ -15,7 +16,6 @@ import {
   KEEPALIVE_CHECK_INTERVAL_MS,
   NOTIFICATION_MAX_RETRIES,
   BALE_URL,
-  BROWSER_LAUNCH_ARGS,
   NAVIGATION_TIMEOUT_MS,
   SPA_RENDER_TIMEOUT_MS,
   CONTENT_RENDER_TIMEOUT_MS,
@@ -28,10 +28,22 @@ export class BaleMonitor {
   private channel: NotificationChannel;
   private running = false;
   private backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
-  private browserClose: (() => Promise<void>) | null = null;
+  private contextClose: (() => Promise<void>) | null = null;
 
-  constructor(private config: AppConfig) {
+  constructor(
+    private config: AppConfig,
+    private sharedBrowser: Browser,
+    private userId: string,
+    private novncPort: number,
+    private vncPort: number,
+    private serverIp: string,
+  ) {
     this.channel = createChannel(config);
+  }
+
+  getStatus(): string {
+    if (!this.running) return "stopped";
+    return "running";
   }
 
   async start(): Promise<void> {
@@ -40,8 +52,8 @@ export class BaleMonitor {
       try {
         await this.runSession();
       } catch (err) {
-        logger.error(`Monitor error: ${err}`);
-        logger.info(`Retrying in ${this.backoffMs}ms...`);
+        logger.error(`[${this.userId}] Monitor error: ${err}`);
+        logger.info(`[${this.userId}] Retrying in ${this.backoffMs}ms...`);
         await this.sleep(this.backoffMs);
         this.backoffMs = Math.min(this.backoffMs * 2, RECONNECT_MAX_BACKOFF_MS);
       }
@@ -50,12 +62,12 @@ export class BaleMonitor {
 
   stop(): void {
     this.running = false;
-    this.browserClose?.().catch((err) => logger.debug("Browser close error:", err));
+    this.contextClose?.().catch((err) => logger.debug(`[${this.userId}] Context close error:`, err));
   }
 
   private async runSession(): Promise<void> {
-    const session = await launchBrowser(this.config.bale.sessionDir);
-    this.browserClose = session.close;
+    const session = await createUserContext(this.sharedBrowser, this.config.bale.sessionDir);
+    this.contextClose = session.close;
 
     try {
       // Inject WS hook BEFORE navigating to Bale
@@ -81,16 +93,15 @@ export class BaleMonitor {
         pageText.includes("زبان");
 
       if (isLoginPage) {
-        // Close headless browser, then handle re-login with a visible browser
         await session.close();
-        this.browserClose = null;
+        this.contextClose = null;
         await this.handleRelogin();
         return;
       }
 
       // Start DOM-based call detection
       const stopCallDetection = await startCallDetection(session.page, async (callerName) => {
-        logger.info(`Detected: incoming call from ${callerName}`);
+        logger.info(`[${this.userId}] Detected: incoming call from ${callerName}`);
         if (this.config.notifications.calls) {
           const event: BaleEvent = {
             type: "call",
@@ -101,7 +112,7 @@ export class BaleMonitor {
         }
       });
 
-      logger.info("Connected to Bale. Monitoring for notifications via WebSocket...\n");
+      logger.info(`[${this.userId}] Connected to Bale. Monitoring for notifications...\n`);
 
       this.backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
 
@@ -114,13 +125,13 @@ export class BaleMonitor {
           await session.page.evaluate("document.title");
         } catch {
           disconnected = true;
-          session.browser.close().catch((err) => logger.debug("Browser close on disconnect error:", err));
+          session.context.close().catch((err: unknown) => logger.debug(`[${this.userId}] Context close on disconnect:`, err));
         }
       }, KEEPALIVE_INTERVAL_MS);
 
       await new Promise<void>((resolve) => {
-        session.browser.on("disconnected", () => {
-          logger.info("Browser disconnected. Reconnecting...");
+        session.context.on("close", () => {
+          logger.info(`[${this.userId}] Browser context closed. Reconnecting...`);
           if (keepalive) clearInterval(keepalive);
           resolve();
         });
@@ -135,52 +146,49 @@ export class BaleMonitor {
 
       await stopCallDetection();
     } finally {
-      if (this.browserClose) {
+      if (this.contextClose) {
         await session.close();
-        this.browserClose = null;
+        this.contextClose = null;
       }
     }
   }
 
   private async handleRelogin(): Promise<void> {
-    logger.warn("Bale session expired. Starting re-login flow...\n");
+    logger.warn(`[${this.userId}] Bale session expired. Starting re-login flow...\n`);
 
     const headless = !process.env.DISPLAY || process.env.DISPLAY === ":99" || process.env.DISPLAY === "";
+
     let novncUrl = "";
+    let novnc: NoVncSession | null = null;
 
     if (headless) {
       try {
-        novncUrl = await startNoVnc();
-        logger.info(`noVNC started for re-login: ${novncUrl}`);
+        novnc = new NoVncSession(this.novncPort, this.vncPort);
+        novncUrl = await novnc.start();
+        logger.info(`[${this.userId}] noVNC started: ${novncUrl}`);
       } catch (err) {
-        logger.warn("Failed to start noVNC:", err);
+        logger.warn(`[${this.userId}] Failed to start noVNC:`, err);
       }
     }
 
-    // Notify the user so they know to re-login
-    const externalUrl = this.config.bale.noVncUrl || novncUrl;
+    const externalUrl = this.serverIp && novncUrl
+      ? novncUrl.replace("localhost", this.serverIp)
+      : novncUrl;
     try {
       await this.dispatch({
-        type: "message",
+        type: "relogin",
         timestamp: new Date(),
         source: "Bale Notifier",
         preview: `Session expired. Please re-login${externalUrl ? ` via noVNC: ${externalUrl}` : " in the browser window"}. You have 10 minutes.`,
       });
     } catch (err) {
-      logger.warn("Failed to send re-login notification:", err);
+      logger.warn(`[${this.userId}] Failed to send re-login notification:`, err);
     }
 
-    // Launch visible browser so the user can interact with the login page
-    const browser = await puppeteer.launch({
-      headless: false,
-      args: BROWSER_LAUNCH_ARGS,
-      userDataDir: this.config.bale.sessionDir,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      env: { ...process.env },
-    });
+    const display = novnc?.display || process.env.DISPLAY || ":99";
+    const { browser, page } = await launchReloginBrowser(display, this.config.bale.sessionDir);
 
     try {
-      const page = await browser.newPage();
       await page.goto(BALE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
 
       try {
@@ -197,15 +205,18 @@ export class BaleMonitor {
         );
       } catch { /* ignore content timeout */ }
 
-      logger.info("Waiting for re-login...");
+      logger.info(`[${this.userId}] Waiting for re-login...`);
       await page.waitForFunction(
         `!window.location.pathname.includes('/login') && !document.body.textContent.includes('login me') && !document.body.textContent.includes('زبان')`,
         { timeout: RELOGIN_TIMEOUT_MS },
       );
-      logger.info("Re-login successful! Resuming monitoring...\n");
+      logger.info(`[${this.userId}] Re-login successful! Resuming monitoring...\n`);
+
+      const cookies = await page.cookies() as any;
+      await saveCookies(cookies, this.config.bale.sessionDir);
     } finally {
       await browser.close();
-      if (headless) stopNoVnc();
+      novnc?.stop();
     }
   }
 
@@ -214,7 +225,7 @@ export class BaleMonitor {
       const event = parseDecodedMessage(msg);
       await this.dispatch(event);
     } catch (err) {
-      logger.warn("Failed to dispatch event:", err);
+      logger.warn(`[${this.userId}] Failed to dispatch event:`, err);
     }
   }
 
@@ -222,14 +233,14 @@ export class BaleMonitor {
     for (let attempt = 1; attempt <= NOTIFICATION_MAX_RETRIES; attempt++) {
       try {
         await this.channel.send(event);
-        logger.info(`[${event.timestamp.toISOString()}] Notified: ${event.type} in ${event.source}`);
+        logger.info(`[${this.userId}] [${event.timestamp.toISOString()}] Notified: ${event.type} in ${event.source}`);
         return;
       } catch (err) {
         if (attempt < NOTIFICATION_MAX_RETRIES) {
-          logger.warn(`Notification attempt ${attempt} failed, retrying in ${RETRY_DELAYS_MS[attempt - 1]}ms...`, err);
+          logger.warn(`[${this.userId}] Notification attempt ${attempt} failed, retrying in ${RETRY_DELAYS_MS[attempt - 1]}ms...`, err);
           await this.sleep(RETRY_DELAYS_MS[attempt - 1]);
         } else {
-          logger.error(`Failed to send notification after ${NOTIFICATION_MAX_RETRIES} attempts:`, err);
+          logger.error(`[${this.userId}] Failed to send notification after ${NOTIFICATION_MAX_RETRIES} attempts:`, err);
         }
       }
     }
