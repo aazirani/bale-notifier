@@ -16,6 +16,9 @@ function formatEvent(event: BaleEvent): string {
         "*Bale Group Notification*",
         event.preview ?? "New activity",
       ].join("\n");
+
+    default:
+      return event.preview ?? event.source;
   }
 }
 

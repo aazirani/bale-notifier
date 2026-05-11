@@ -25,6 +25,9 @@ function formatEvent(event: BaleEvent): { text: string; link?: string } {
         ].join("\n"),
         link: event.chatUrl,
       };
+
+    default:
+      return { text: event.preview ?? event.source };
   }
 }
 
