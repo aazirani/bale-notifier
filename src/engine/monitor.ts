@@ -21,6 +21,7 @@ import {
   SPA_RENDER_TIMEOUT_MS,
   CONTENT_RENDER_TIMEOUT_MS,
   RELOGIN_TIMEOUT_MS,
+  RELOGIN_COOLDOWN_MS,
 } from "../constants.js";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -29,6 +30,9 @@ export class BaleMonitor {
   private channel: NotificationChannel;
   private running = false;
   private backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
+  private reloginAttempts = 0;
+  private static readonly MAX_RELOGIN_ATTEMPTS = 3;
+  private static readonly RELOGIN_COOLDOWN_MS = RELOGIN_COOLDOWN_MS;
   private contextClose: (() => Promise<void>) | null = null;
 
   constructor(
@@ -101,6 +105,25 @@ export class BaleMonitor {
       if (isLoginPage) {
         await session.close();
         this.contextClose = null;
+
+        this.reloginAttempts++;
+        if (this.reloginAttempts > BaleMonitor.MAX_RELOGIN_ATTEMPTS) {
+          logger.warn(`[${this.userId}] Max re-login attempts (${BaleMonitor.MAX_RELOGIN_ATTEMPTS}) reached. Cooldown for 30 minutes.`);
+          try {
+            await this.dispatch({
+              type: "relogin",
+              timestamp: new Date(),
+              source: "Bale Notifier",
+              preview: "Session expired. Manual re-login required. Monitoring paused for 30 minutes.",
+            });
+          } catch (err) {
+            logger.debug(`[${this.userId}] Failed to send cooldown notification:`, err);
+          }
+          await this.sleep(BaleMonitor.RELOGIN_COOLDOWN_MS);
+          this.reloginAttempts = 0;
+          return;
+        }
+
         await this.handleRelogin();
         return;
       }
@@ -121,6 +144,7 @@ export class BaleMonitor {
       logger.info(`[${this.userId}] Connected to Bale. Monitoring for notifications...\n`);
 
       this.backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
+      this.reloginAttempts = 0;
 
       let keepalive: NodeJS.Timeout | null = null;
       let disconnected = false;
