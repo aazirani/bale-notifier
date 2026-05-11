@@ -48,6 +48,12 @@ export class BaleMonitor {
     return "running";
   }
 
+  reloadConfig(config: AppConfig): void {
+    this.config = config;
+    this.channel = createChannel(config);
+    logger.info(`[${this.userId}] Config reloaded.`);
+  }
+
   async start(): Promise<void> {
     this.running = true;
     while (this.running) {

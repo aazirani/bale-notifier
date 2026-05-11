@@ -28,6 +28,7 @@ export class Orchestrator {
   private statePath: string;
   private stateSaveInterval: NodeJS.Timeout | null = null;
   private watcher: fs.FSWatcher | null = null;
+  private configWatchers: Map<string, fs.FSWatcher> = new Map();
   private watcherTimer: NodeJS.Timeout | null = null;
 
   constructor(dataDir: string = "/data") {
@@ -81,6 +82,9 @@ export class Orchestrator {
       this.watcherTimer = null;
     }
     this.watcher?.close();
+    for (const [userId] of this.configWatchers) {
+      this.unwatchUserConfig(userId);
+    }
 
     for (const [userId, session] of this.sessions) {
       logger.info(`Stopping monitor for ${userId}...`);
@@ -108,6 +112,7 @@ export class Orchestrator {
   async removeUser(userId: string): Promise<void> {
     const session = this.sessions.get(userId);
     if (session) {
+      this.unwatchUserConfig(userId);
       session.monitor.stop();
       this.sessions.delete(userId);
     }
@@ -162,6 +167,7 @@ export class Orchestrator {
       });
 
       session.status = "running";
+      this.watchUserConfig(userId);
       logger.info(`Started monitor for user ${userId} (noVNC port: ${port})`);
     } catch (err) {
       logger.error(`Failed to start user ${userId}:`, err);
@@ -210,11 +216,50 @@ export class Orchestrator {
       if (!currentUsers.has(userId)) {
         const session = this.sessions.get(userId);
         if (session) {
+          this.unwatchUserConfig(userId);
           session.monitor.stop();
           this.sessions.delete(userId);
           logger.info(`Auto-stopped removed user ${userId}`);
         }
       }
+    }
+  }
+
+  private watchUserConfig(userId: string): void {
+    const configPath = path.join(this.usersDir, userId, "config.json");
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      const watcher = fs.watch(configPath, () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = null;
+          this.onUserConfigChange(userId);
+        }, 1000);
+      });
+      this.configWatchers.set(userId, watcher);
+    } catch {
+      // File may not exist yet
+    }
+  }
+
+  private unwatchUserConfig(userId: string): void {
+    const watcher = this.configWatchers.get(userId);
+    if (watcher) {
+      watcher.close();
+      this.configWatchers.delete(userId);
+    }
+  }
+
+  private onUserConfigChange(userId: string): void {
+    const session = this.sessions.get(userId);
+    if (!session) return;
+
+    try {
+      const newConfig = loadUserConfig(this.usersDir, userId);
+      session.config = newConfig;
+      session.monitor.reloadConfig(newConfig);
+    } catch (err) {
+      logger.warn(`Failed to reload config for ${userId}:`, err);
     }
   }
 }
