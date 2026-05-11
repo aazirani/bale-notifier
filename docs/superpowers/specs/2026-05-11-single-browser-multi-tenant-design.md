@@ -44,7 +44,7 @@ Replace per-user containers with a **single container running one shared Chromiu
 | Containers | One per user | Single container |
 | Chromium instances | One per user | One shared |
 | RAM per user | ~300-600MB | ~20-30MB (plus ~400MB shared browser) |
-| noVNC | Always running per user | On-demand, shared port |
+| noVNC | Always running per user | On-demand, per-user port with token auth |
 | Config | `/data/config.json` | `/data/users/{id}/config.json` |
 | User management | Manual container duplication | CLI commands |
 
@@ -72,9 +72,9 @@ Replace per-user containers with a **single container running one shared Chromiu
 ### Re-login (Rare)
 
 - When Bale session expires, system detects it via the same DOM check used today
-- noVNC starts on the shared port (6080). If another re-login is in progress, the user's re-login is queued until the port is free.
-- User receives a notification via their configured channel with the noVNC URL
-- After login completes, noVNC shuts down; next queued user (if any) starts their re-login
+- noVNC starts on the user's dedicated port from the configured range (e.g., user1 → 6081, user2 → 6082). Multiple users can re-login simultaneously.
+- User receives a notification via their configured channel with their unique, token-gated noVNC URL
+- After login completes, noVNC shuts down on that port. After timeout (15 min), noVNC is force-stopped.
 
 ### Removing a User
 
@@ -104,7 +104,40 @@ Replace per-user containers with a **single container running one shared Chromiu
 
 ## Error Handling & Isolation
 
-### User Isolation
+### Login Isolation (noVNC Security)
+
+Each user's noVNC session must be inaccessible to other users. Three layers of protection:
+
+1. **Unique port per user**: When noVNC starts for a user's login, it binds to a unique port from a configured range (e.g., 6081-6090). The port is allocated per-user (not first-come-first-served), so user1 always gets 6081, user2 always gets 6082, etc. This means multiple users can re-login simultaneously.
+
+2. **Token-gated URL**: The noVNC URL includes a random session token that changes each time noVNC starts. Example: `http://server:6082/vnc.html?token=a7f3b9c1`. Without the correct token, the connection is refused. This prevents a user from guessing another user's URL.
+
+3. **Short-lived sessions**: noVNC only runs during the active login window. It shuts down immediately after login completes or after a timeout (e.g., 15 minutes). No persistent noVNC access.
+
+The compose file maps the full port range:
+```yaml
+ports:
+  - "6081-6090:6081-6090"  # Per-user noVNC (on-demand)
+```
+
+`master.json` configures the range:
+```json
+{
+  "serverIp": "203.0.113.10",
+  "novncPortRange": [6081, 6090],
+  "loginTimeoutMinutes": 15
+}
+```
+
+### Notification Channel Isolation
+
+Each user's notification channel is completely independent:
+
+- **Per-user channel instances**: The orchestrator creates a separate channel object per user from their own `config.json`. User A's Telegram bot and User B's Telegram bot are separate instances with separate tokens.
+- **Strict userId routing**: When a Bale event is detected on a user's browser page, the event is dispatched only to that user's channel instance. The dispatch path is: `userId → userSession → userSession.channel.send(event)`. There is no shared channel pool or broadcast.
+- **No shared credentials**: Each user configures their own bot token / webhook URL during setup. The system never shares or reuses credentials between users.
+
+### User Isolation (Browser)
 
 - Each browser context is sandboxed via Puppeteer's `browser.newContext()` — cookies, storage, sessions are fully isolated
 - Notification channels are independent — one user's broken Telegram bot doesn't affect another's Discord webhook
@@ -132,11 +165,11 @@ services:
   bale-notifier:
     build: .
     ports:
-      - "6080:6080"  # noVNC (on-demand)
+      - "6081-6090:6081-6090"  # Per-user noVNC (on-demand)
     volumes:
       - ./data:/data
     environment:
-      - NOVNC_PORT=6080
+      - NOVNC_PORT_RANGE=6081-6090
       - DISPLAY=:99
     deploy:
       resources:
@@ -176,7 +209,7 @@ With a shell alias: `alias bale='docker compose exec bale-notifier bale'`
 | RAM | 3-6 GB | ~700 MB |
 | Containers | 10 | 1 |
 | Chromium processes | 10 | 1 |
-| noVNC instances | 10 (always running) | 1 (on-demand) |
+| noVNC instances | 10 (always running) | Per-user on-demand (max 1 at a time per user) |
 | Docker image layers | 10× shared | 1× |
 
 ## Testing
