@@ -1,7 +1,9 @@
 import input from "@inquirer/input";
+import confirm from "@inquirer/confirm";
 import fs from "node:fs";
 import path from "node:path";
-import { discoverUsers, loadUserConfig } from "./config.js";
+import os from "node:os";
+import { discoverUsers, loadUserConfig, ensureMasterConfig, saveMasterConfig } from "./config.js";
 import { runWizard } from "./setup/wizard.js";
 import { logger } from "./logger.js";
 
@@ -30,6 +32,27 @@ export async function handleCli(command: string): Promise<void> {
 }
 
 async function addUser(): Promise<void> {
+  // Ensure master config exists and has a valid server IP
+  const masterConfigPath = path.join(DATA_DIR, "master.json");
+  const masterConfig = ensureMasterConfig(masterConfigPath);
+
+  if (masterConfig.serverIp === "localhost") {
+    const detectedIp = detectServerIp();
+    const defaultIp = detectedIp || "localhost";
+    const ip = await input({ message: "Server IP or hostname (for noVNC re-login links):", default: defaultIp });
+    masterConfig.serverIp = ip;
+    saveMasterConfig(masterConfigPath, masterConfig);
+    logger.info(`Server IP set to ${ip}\n`);
+  } else {
+    const keep = await confirm({ message: `Server IP is ${masterConfig.serverIp}. Keep it?`, default: true });
+    if (!keep) {
+      const ip = await input({ message: "New server IP or hostname:", default: masterConfig.serverIp });
+      masterConfig.serverIp = ip;
+      saveMasterConfig(masterConfigPath, masterConfig);
+      logger.info(`Server IP updated to ${ip}\n`);
+    }
+  }
+
   const userId = await input({
     message: "Enter a user ID (alphanumeric, used as directory name):",
     validate: (v) => /^[a-zA-Z0-9_-]+$/.test(v) || "Must be alphanumeric (dashes and underscores allowed)",
@@ -44,10 +67,23 @@ async function addUser(): Promise<void> {
   const configPath = path.join(userDir, "config.json");
   const sessionDir = path.join(userDir, "session");
 
-  await runWizard(configPath, sessionDir);
+  await runWizard(configPath, sessionDir, masterConfig.serverIp);
 
   logger.info(`\nUser "${userId}" added. The orchestrator will auto-detect and start monitoring.`);
   logger.info("No container restart needed.\n");
+}
+
+function detectServerIp(): string | null {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    if (name === "lo" || name.startsWith("docker") || name.startsWith("br-")) continue;
+    for (const iface of interfaces[name] ?? []) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return null;
 }
 
 async function removeUser(): Promise<void> {

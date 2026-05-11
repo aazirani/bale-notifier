@@ -8,6 +8,7 @@ import { saveConfig } from "../config.js";
 import { startNoVnc, stopNoVnc } from "./novnc.js";
 import { logger } from "../logger.js";
 import { BALE_URL, DEFAULT_CONFIG_PATH, BROWSER_LAUNCH_ARGS, NAVIGATION_TIMEOUT_MS, SPA_RENDER_TIMEOUT_MS, CONTENT_RENDER_TIMEOUT_MS, LOGIN_TIMEOUT_MS } from "../constants.js";
+import { createChannel } from "../channels/index.js";
 
 function sessionDirFromConfigPath(configPath: string): string {
   const dataDir = configPath.substring(0, configPath.lastIndexOf("/"));
@@ -19,11 +20,11 @@ function isHeadless(): boolean {
   return !process.env.DISPLAY || process.env.DISPLAY === ":99" || process.env.DISPLAY === "";
 }
 
-export async function runWizard(configPath = DEFAULT_CONFIG_PATH, explicitSessionDir?: string): Promise<AppConfig> {
+export async function runWizard(configPath = DEFAULT_CONFIG_PATH, explicitSessionDir?: string, serverIp?: string): Promise<AppConfig> {
   logger.info("Welcome to Bale Notifier!\n");
 
   const sessionDir = explicitSessionDir || sessionDirFromConfigPath(configPath);
-  await setupBaleAuth(sessionDir);
+  await setupBaleAuth(sessionDir, serverIp);
   const channelConfig = await setupChannel();
   const notifications = await setupNotificationPrefs();
 
@@ -37,10 +38,12 @@ export async function runWizard(configPath = DEFAULT_CONFIG_PATH, explicitSessio
   logger.info(`\nConfig saved to ${configPath}`);
   logger.info("Setup complete. Monitoring Bale for notifications.\n");
 
+  validateSessionDir(sessionDir);
+
   return config;
 }
 
-async function setupBaleAuth(sessionDir: string): Promise<void> {
+async function setupBaleAuth(sessionDir: string, serverIp?: string): Promise<void> {
   logger.info("Step 1: Authenticate with Bale\n");
 
   const headless = isHeadless();
@@ -48,10 +51,11 @@ async function setupBaleAuth(sessionDir: string): Promise<void> {
   if (headless) {
     logger.info("Detected headless environment. Starting noVNC...\n");
     const url = await startNoVnc();
+    const displayUrl = serverIp ? url.replace("localhost", serverIp) : url;
     logger.info("");
     logger.info("========================================");
     logger.info("  Open this URL in your browser to log into Bale:");
-    logger.info(`  ${url}`);
+    logger.info(`  ${displayUrl}`);
     logger.info("========================================");
     logger.info("");
     process.env.DISPLAY = ":99";
@@ -141,38 +145,68 @@ async function setupChannel(): Promise<AppConfig["channel"]> {
     ],
   });
 
-  switch (channelType) {
-    case "telegram": {
-      logger.info("\nTo set up Telegram notifications:");
-      logger.info("  1. Open Telegram and search for @BotFather");
-      logger.info("  2. Send /newbot and follow the prompts to create a bot");
-      logger.info("  3. Copy the bot token BotFather gives you\n");
-      const botToken = await input({ message: "Enter your Telegram bot token:" });
-      logger.info("\nTo get your chat ID:");
-      logger.info("  1. Open Telegram and send any message to your new bot");
-      logger.info("  2. Open this URL in your browser:");
-      logger.info(`     https://api.telegram.org/bot${botToken}/getUpdates`);
-      logger.info("  3. Find \"chat\":{\"id\": NUMBER} in the response");
-      logger.info("     (if result is empty, send another message to the bot and open the URL in a new browser window)\n");
-      const chatId = Number(await input({ message: "Enter your Telegram chat ID:" }));
-      return { type: "telegram", telegram: { botToken, chatId } };
+  while (true) {
+    let channelConfig: AppConfig["channel"];
+
+    switch (channelType) {
+      case "telegram": {
+        logger.info("\nTo set up Telegram notifications:");
+        logger.info("  1. Open Telegram and search for @BotFather");
+        logger.info("  2. Send /newbot and follow the prompts to create a bot");
+        logger.info("  3. Copy the bot token BotFather gives you\n");
+        const botToken = await input({ message: "Enter your Telegram bot token:" });
+        logger.info("\nTo get your chat ID:");
+        logger.info("  1. Open Telegram and send any message to your new bot");
+        logger.info("  2. Open this URL in your browser:");
+        logger.info(`     https://api.telegram.org/bot${botToken}/getUpdates`);
+        logger.info("  3. Find \"chat\":{\"id\": NUMBER} in the response");
+        logger.info("     (if result is empty, send another message to the bot and open the URL in a new browser window)\n");
+        const chatId = Number(await input({ message: "Enter your Telegram chat ID:" }));
+        channelConfig = { type: "telegram", telegram: { botToken, chatId } };
+        break;
+      }
+      case "discord": {
+        logger.info("\nTo set up Discord notifications:");
+        logger.info("  1. Open your Discord server settings > Integrations > Webhooks");
+        logger.info("  2. Create a new webhook for the channel where you want notifications");
+        logger.info("  3. Copy the webhook URL\n");
+        const webhookUrl = await input({ message: "Enter your Discord webhook URL:" });
+        channelConfig = { type: "discord", discord: { webhookUrl } };
+        break;
+      }
+      case "slack": {
+        logger.info("\nTo set up Slack notifications:");
+        logger.info("  1. Go to https://api.slack.com/apps and create a new app");
+        logger.info("  2. Enable Incoming Webhooks and create one for your channel");
+        logger.info("  3. Copy the webhook URL\n");
+        const webhookUrl = await input({ message: "Enter your Slack webhook URL:" });
+        channelConfig = { type: "slack", slack: { webhookUrl } };
+        break;
+      }
     }
-    case "discord": {
-      logger.info("\nTo set up Discord notifications:");
-      logger.info("  1. Open your Discord server settings > Integrations > Webhooks");
-      logger.info("  2. Create a new webhook for the channel where you want notifications");
-      logger.info("  3. Copy the webhook URL\n");
-      const webhookUrl = await input({ message: "Enter your Discord webhook URL:" });
-      return { type: "discord", discord: { webhookUrl } };
+
+    // Validate credentials
+    logger.info("\nValidating channel credentials...");
+    const tempConfig: AppConfig = {
+      bale: { sessionDir: "" }, // Not used for validation
+      channel: channelConfig,
+      notifications: { messages: true, calls: true, groups: true },
+    };
+    const channel = createChannel(tempConfig);
+    const isValid = await channel.validateConfig();
+
+    if (isValid) {
+      logger.info("Channel credentials validated successfully.\n");
+      return channelConfig;
     }
-    case "slack": {
-      logger.info("\nTo set up Slack notifications:");
-      logger.info("  1. Go to https://api.slack.com/apps and create a new app");
-      logger.info("  2. Enable Incoming Webhooks and create one for your channel");
-      logger.info("  3. Copy the webhook URL\n");
-      const webhookUrl = await input({ message: "Enter your Slack webhook URL:" });
-      return { type: "slack", slack: { webhookUrl } };
+
+    logger.warn("Channel validation failed. The credentials may be incorrect.\n");
+    const retry = await confirm({ message: "Would you like to try again?", default: true });
+    if (!retry) {
+      logger.warn("Continuing with unvalidated credentials. Notifications may not work.\n");
+      return channelConfig;
     }
+    logger.info("");
   }
 }
 
@@ -184,4 +218,15 @@ async function setupNotificationPrefs(): Promise<AppConfig["notifications"]> {
   const groups = await confirm({ message: "Notify on group activity?", default: true });
 
   return { messages, calls, groups };
+}
+
+function validateSessionDir(sessionDir: string): void {
+  if (!fs.existsSync(sessionDir)) {
+    logger.warn("Warning: Session directory does not exist. Login may not have been saved.\n");
+    return;
+  }
+  const files = fs.readdirSync(sessionDir);
+  if (files.length === 0) {
+    logger.warn("Warning: Session directory is empty. Login may not have been saved.\n");
+  }
 }
