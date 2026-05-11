@@ -12,7 +12,7 @@ Runs headless in Docker with Puppeteer — no desktop needed. Single container s
 
 - **Message monitoring** — Detects new unread messages in Bale chats via WebSocket protobuf interception
 - **Call alerts** — Notifies on incoming voice/video calls via DOM monitoring
-- **Multi-tenant** — Multiple users in a single container with shared browser
+- **Multi-tenant** — Multiple users in a single container, each with their own browser instance
 - **Multi-channel** — Forwards to Telegram, Discord, or Slack
 - **Docker-ready** — Single `docker compose up` to start
 - **noVNC access** — Browser-based remote access for Bale login on headless servers
@@ -70,6 +70,21 @@ cd bale-notifier
 npm install
 npm run build
 PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser node dist/main.js add-user
+```
+
+### Deploy to a Server (Quick)
+
+Download the latest zip from the [releases](https://github.com/aazirani/bale-notifier/releases) or grab it from the repo:
+
+```bash
+# On your server
+curl -L -o bale-notifier.zip https://github.com/aazirani/bale-notifier/raw/main/bale-notifier.zip
+unzip bale-notifier.zip
+cd bale-notifier
+docker compose up --build -d
+
+# Add your first user
+docker compose exec -it bale-notifier bale add-user
 ```
 
 ## Configuration
@@ -138,15 +153,14 @@ Ports are stable — removing a user doesn't shift other users' ports.
 ## Architecture
 
 ```
-Shared Puppeteer Browser
-  ├─ User Context (alice) → WS Interceptor → Decoder → Event Parser → Telegram
-  ├─ User Context (bob)   → WS Interceptor → Decoder → Event Parser → Discord
-  └─ User Context (carol) → WS Interceptor → Decoder → Event Parser → Slack
+Orchestrator
+  ├─ User Browser (alice) → WS Interceptor → Decoder → Event Parser → Telegram
+  ├─ User Browser (bob)   → WS Interceptor → Decoder → Event Parser → Discord
+  └─ User Browser (carol) → WS Interceptor → Decoder → Event Parser → Slack
 ```
 
-- **Shared Browser** — One Chromium instance with isolated browser contexts per user (~700MB total for 10 users)
+- **Per-User Browsers** — Each user gets a Puppeteer browser with their own `userDataDir` (full Chromium profile with session persistence)
 - **WebSocket Interception** — Replaces WebSocket constructor to intercept Bale's protobuf frames
-- **Session Persistence** — Cookies + localStorage saved/restored per user
 - **FSWatcher** — Auto-detects new users and starts monitoring with 2-second debounce
 - **Channels** — Pluggable notification targets with retry logic and immediate validation
 
