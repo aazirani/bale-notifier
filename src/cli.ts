@@ -2,7 +2,6 @@ import input from "@inquirer/input";
 import confirm from "@inquirer/confirm";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { discoverUsers, loadUserConfig, ensureMasterConfig, saveMasterConfig } from "./config.js";
 import { runWizard } from "./setup/wizard.js";
 import { logger } from "./logger.js";
@@ -37,9 +36,13 @@ async function addUser(): Promise<void> {
   const masterConfig = ensureMasterConfig(masterConfigPath);
 
   if (masterConfig.serverIp === "localhost") {
-    const detectedIp = detectServerIp();
-    const defaultIp = detectedIp || "localhost";
-    const ip = await input({ message: "Server IP or hostname (for noVNC re-login links):", default: defaultIp });
+    logger.info("The server IP is used in noVNC re-login links when Bale sessions expire.");
+    logger.info("Enter the IP or hostname that you use to access this server from your browser.\n");
+    const ip = await input({ message: "Server IP or hostname:" });
+    if (!ip) {
+      logger.error("Server IP is required. Aborting.");
+      process.exit(1);
+    }
     masterConfig.serverIp = ip;
     saveMasterConfig(masterConfigPath, masterConfig);
     logger.info(`Server IP set to ${ip}\n`);
@@ -71,19 +74,6 @@ async function addUser(): Promise<void> {
 
   logger.info(`\nUser "${userId}" added. The orchestrator will auto-detect and start monitoring.`);
   logger.info("No container restart needed.\n");
-}
-
-function detectServerIp(): string | null {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    if (name === "lo" || name.startsWith("docker") || name.startsWith("br-")) continue;
-    for (const iface of interfaces[name] ?? []) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return null;
 }
 
 async function removeUser(): Promise<void> {
