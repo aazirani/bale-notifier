@@ -59,7 +59,7 @@ function writeUserConfig(userId: string) {
   fs.writeFileSync(
     path.join(dir, "config.json"),
     JSON.stringify({
-      bale: { sessionDir: path.join(dir, "session"), noVncUrl: "" },
+      bale: { sessionDir: path.join(dir, "session") },
       channel: { type: "telegram", telegram: { botToken: "t", chatId: 1 } },
       notifications: { messages: true, calls: true, groups: true },
     }),

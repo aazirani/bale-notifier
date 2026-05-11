@@ -86,10 +86,13 @@ export function loadMasterConfig(configPath: string): MasterConfig {
       serverIp: "localhost",
       novncPortRange: DEFAULT_NOVNC_PORT_RANGE,
       loginTimeoutMinutes: DEFAULT_LOGIN_TIMEOUT_MINUTES,
+      userPorts: {},
     };
   }
   const raw = fs.readFileSync(configPath, "utf-8");
-  return JSON.parse(raw) as MasterConfig;
+  const config = JSON.parse(raw) as MasterConfig;
+  config.userPorts = config.userPorts ?? {};
+  return config;
 }
 
 export function saveMasterConfig(configPath: string, config: MasterConfig): void {
@@ -108,4 +111,18 @@ export function loadUserConfig(usersDir: string, userId: string): AppConfig {
 export function saveUserConfig(usersDir: string, userId: string, config: AppConfig): void {
   const configPath = path.join(usersDir, userId, "config.json");
   saveConfig(configPath, config);
+}
+
+export function ensureMasterConfig(configPath: string): MasterConfig {
+  if (fs.existsSync(configPath)) {
+    return loadMasterConfig(configPath);
+  }
+  const config: MasterConfig = {
+    serverIp: "localhost",
+    novncPortRange: DEFAULT_NOVNC_PORT_RANGE,
+    loginTimeoutMinutes: DEFAULT_LOGIN_TIMEOUT_MINUTES,
+    userPorts: {},
+  };
+  saveMasterConfig(configPath, config);
+  return config;
 }

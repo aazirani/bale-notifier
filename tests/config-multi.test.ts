@@ -56,6 +56,7 @@ describe("loadMasterConfig and saveMasterConfig", () => {
       serverIp: "203.0.113.10",
       novncPortRange: [6081, 6090],
       loginTimeoutMinutes: 15,
+      userPorts: { alice: 6081 },
     };
     saveMasterConfig(configPath, config);
     const loaded = loadMasterConfig(configPath);
@@ -67,6 +68,7 @@ describe("loadMasterConfig and saveMasterConfig", () => {
     expect(loaded.serverIp).toBe("localhost");
     expect(loaded.novncPortRange).toEqual([6081, 6090]);
     expect(loaded.loginTimeoutMinutes).toBe(15);
+    expect(loaded.userPorts).toEqual({});
   });
 });
 
@@ -74,7 +76,7 @@ describe("loadUserConfig and saveUserConfig", () => {
   it("round-trips a user config", () => {
     const usersDir = path.join(tmpDir, "users");
     const config: AppConfig = {
-      bale: { sessionDir: "/data/users/alice/session", noVncUrl: "" },
+      bale: { sessionDir: "/data/users/alice/session" },
       channel: { type: "telegram", telegram: { botToken: "123:ABC", chatId: 999 } },
       notifications: { messages: true, calls: true, groups: true },
     };

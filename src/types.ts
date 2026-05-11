@@ -44,7 +44,6 @@ export interface NotificationPreferences {
 export interface AppConfig {
   bale: {
     sessionDir: string;
-    noVncUrl: string;
   };
   channel: {
     type: ChannelType;
@@ -73,6 +72,7 @@ export interface MasterConfig {
   serverIp: string;
   novncPortRange: [number, number];
   loginTimeoutMinutes: number;
+  userPorts: Record<string, number>;
   logLevel?: string;
 }
 

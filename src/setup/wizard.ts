@@ -7,8 +7,7 @@ import type { AppConfig, ChannelType } from "../types.js";
 import { saveConfig } from "../config.js";
 import { startNoVnc, stopNoVnc } from "./novnc.js";
 import { logger } from "../logger.js";
-import { BALE_URL, DEFAULT_CONFIG_PATH, BROWSER_LAUNCH_ARGS, NAVIGATION_TIMEOUT_MS, SPA_RENDER_TIMEOUT_MS, CONTENT_RENDER_TIMEOUT_MS, LOGIN_TIMEOUT_MS, NOVNC_PORT } from "../constants.js";
-import os from "node:os";
+import { BALE_URL, DEFAULT_CONFIG_PATH, BROWSER_LAUNCH_ARGS, NAVIGATION_TIMEOUT_MS, SPA_RENDER_TIMEOUT_MS, CONTENT_RENDER_TIMEOUT_MS, LOGIN_TIMEOUT_MS } from "../constants.js";
 
 function sessionDirFromConfigPath(configPath: string): string {
   const dataDir = configPath.substring(0, configPath.lastIndexOf("/"));
@@ -27,10 +26,9 @@ export async function runWizard(configPath = DEFAULT_CONFIG_PATH, explicitSessio
   await setupBaleAuth(sessionDir);
   const channelConfig = await setupChannel();
   const notifications = await setupNotificationPrefs();
-  const noVncUrl = await setupNoVncUrl();
 
   const config: AppConfig = {
-    bale: { sessionDir, noVncUrl },
+    bale: { sessionDir },
     channel: channelConfig,
     notifications,
   };
@@ -50,7 +48,12 @@ async function setupBaleAuth(sessionDir: string): Promise<void> {
   if (headless) {
     logger.info("Detected headless environment. Starting noVNC...\n");
     const url = await startNoVnc();
-    logger.info(`Open this URL in your browser to log into Bale:\n  ${url}\n`);
+    logger.info("");
+    logger.info("========================================");
+    logger.info("  Open this URL in your browser to log into Bale:");
+    logger.info(`  ${url}`);
+    logger.info("========================================");
+    logger.info("");
     process.env.DISPLAY = ":99";
   }
 
@@ -181,30 +184,4 @@ async function setupNotificationPrefs(): Promise<AppConfig["notifications"]> {
   const groups = await confirm({ message: "Notify on group activity?", default: true });
 
   return { messages, calls, groups };
-}
-
-async function setupNoVncUrl(): Promise<string> {
-  const detectedIp = detectServerIp();
-  const defaultIp = detectedIp || "localhost";
-
-  logger.info("\nStep 4: Server address for noVNC\n");
-  logger.info("This is the IP used in re-login notifications when the Bale session expires.\n");
-
-  const ip = await input({ message: "Server IP or hostname:", default: defaultIp });
-
-  return `http://${ip}:${NOVNC_PORT}/vnc.html?autoconnect=true`;
-}
-
-function detectServerIp(): string | null {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    // Skip Docker/internal interfaces
-    if (name === "lo" || name.startsWith("docker") || name.startsWith("br-")) continue;
-    for (const iface of interfaces[name] ?? []) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return null;
 }
