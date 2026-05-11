@@ -53,11 +53,14 @@ Replace per-user containers with a **single container running one shared Chromiu
 ### Adding a User
 
 1. Admin runs `docker compose exec bale-notifier bale add-user`
-2. System creates a browser context with isolated storage
-3. noVNC starts temporarily for that user
-4. User logs into Bale via noVNC
-5. System saves session cookies to `/data/users/{userId}/session/`
-6. noVNC shuts down; user's page begins monitoring
+2. CLI prompts for a user ID (alphanumeric, used as directory name)
+3. CLI runs the existing setup wizard interactively:
+   - Bale authentication (opens noVNC for browser login)
+   - Notification channel selection and config (Telegram/Discord/Slack)
+   - Notification preferences (messages/calls/groups)
+4. System creates a browser context with isolated storage under `/data/users/{userId}/`
+5. noVNC shuts down after Bale login completes
+6. User's page begins monitoring; config saved to `/data/users/{userId}/config.json`
 
 ### Monitoring (Per User)
 
@@ -69,14 +72,14 @@ Replace per-user containers with a **single container running one shared Chromiu
 ### Re-login (Rare)
 
 - When Bale session expires, system detects it via the same DOM check used today
-- noVNC starts on a dynamically allocated port
+- noVNC starts on the shared port (6080). If another re-login is in progress, the user's re-login is queued until the port is free.
 - User receives a notification via their configured channel with the noVNC URL
-- After login completes, noVNC shuts down
+- After login completes, noVNC shuts down; next queued user (if any) starts their re-login
 
 ### Removing a User
 
-- Admin runs `docker compose exec bale-notifier bale remove-user`
-- Browser context closes, session data removed
+- Admin runs `docker compose exec bale-notifier bale remove-user <userId>`
+- Browser context closes, user's directory under `/data/users/{userId}/` removed
 
 ## Configuration & Storage
 
@@ -147,10 +150,10 @@ services:
 A `bale` shell wrapper (`/usr/local/bin/bale`) maps subcommands:
 
 ```bash
-bale add-user       # Start user setup (opens noVNC for Bale login)
-bale remove-user    # Remove a user and their session data
-bale list-users     # Show all configured users and their status
-bale status         # Health check — overall and per-user
+bale add-user                  # Start user setup (prompts for ID, runs setup wizard)
+bale remove-user <userId>      # Remove a user and their session data
+bale list-users                # Show all configured users and their status
+bale status                    # Health check — overall and per-user
 ```
 
 Usage:
