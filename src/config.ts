@@ -1,5 +1,7 @@
 import fs from "node:fs";
-import type { AppConfig } from "./types.js";
+import path from "node:path";
+import type { AppConfig, MasterConfig } from "./types.js";
+import { DEFAULT_NOVNC_PORT_RANGE, DEFAULT_LOGIN_TIMEOUT_MINUTES } from "./constants.js";
 
 export function configExists(configPath: string): boolean {
   return fs.existsSync(configPath);
@@ -66,4 +68,44 @@ function isValidUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+// --- Multi-User Config Functions ---
+
+export function discoverUsers(usersDir: string): string[] {
+  if (!fs.existsSync(usersDir)) return [];
+  const entries = fs.readdirSync(usersDir, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(usersDir, e.name, "config.json")))
+    .map((e) => e.name);
+}
+
+export function loadMasterConfig(configPath: string): MasterConfig {
+  if (!fs.existsSync(configPath)) {
+    return {
+      serverIp: "localhost",
+      novncPortRange: DEFAULT_NOVNC_PORT_RANGE,
+      loginTimeoutMinutes: DEFAULT_LOGIN_TIMEOUT_MINUTES,
+    };
+  }
+  const raw = fs.readFileSync(configPath, "utf-8");
+  return JSON.parse(raw) as MasterConfig;
+}
+
+export function saveMasterConfig(configPath: string, config: MasterConfig): void {
+  const dir = path.dirname(configPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+}
+
+export function loadUserConfig(usersDir: string, userId: string): AppConfig {
+  const configPath = path.join(usersDir, userId, "config.json");
+  return loadConfig(configPath);
+}
+
+export function saveUserConfig(usersDir: string, userId: string, config: AppConfig): void {
+  const configPath = path.join(usersDir, userId, "config.json");
+  saveConfig(configPath, config);
 }
