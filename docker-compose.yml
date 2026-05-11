@@ -1,34 +1,24 @@
-x-bale-notifier: &bale-notifier
-  build: .
-  stdin_open: true
-  tty: true
-  restart: unless-stopped
-  environment:
-    - DISPLAY=:99
-
 services:
-  # Copy and customize this block for each user.
-  # Each user gets: unique container name, unique host ports, unique data volume.
-  user1:
-    <<: *bale-notifier
-    container_name: bale-user1
+  bale-notifier:
+    build: .
+    container_name: bale-notifier
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
     ports:
-      - "6081:6081"
+      - "6081-6090:6081-6090"
     volumes:
-      - ./data/user1:/data
+      - ./data:/data
     environment:
       - DISPLAY=:99
-      - NOVNC_PORT=6081
-      - VNC_PORT=5901
-
-  # user2:
-  #   <<: *bale-notifier
-  #   container_name: bale-user2
-  #   ports:
-  #     - "6082:6082"
-  #   volumes:
-  #     - ./data/user2:/data
-  #   environment:
-  #     - DISPLAY=:99
-  #     - NOVNC_PORT=6082
-  #     - VNC_PORT=5902
+      - DATA_DIR=/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "node dist/main.js"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

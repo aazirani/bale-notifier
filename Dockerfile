@@ -24,7 +24,11 @@ RUN npm run build
 
 RUN npm prune --omit=dev
 
-EXPOSE 6080
+# Install bale CLI wrapper
+COPY bin/bale /usr/local/bin/bale
+RUN chmod +x /usr/local/bin/bale
+
+EXPOSE 6081-6090
 
 VOLUME ["/data"]
 
