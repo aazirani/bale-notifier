@@ -4,11 +4,11 @@ Docker-packaged multi-tenant notification forwarder that monitors web.bale.ai fo
 
 ## Architecture
 
-- **Orchestrator** (`src/orchestrator.ts`) — Manages shared Puppeteer browser, per-user browser contexts, and filesystem watcher for auto-discovery of new users
+- **Orchestrator** (`src/orchestrator.ts`) — Manages per-user browser instances, filesystem watcher for auto-discovery of new users, periodic user scan (15s), and per-user config hot-reload
 - **CLI** (`src/cli.ts`) — User management commands: `add-user`, `remove-user`, `list-users`, `status`. Initializes master.json with server IP before running the wizard.
 - **Setup Wizard** (`src/setup/wizard.ts`) — Terminal CLI using Inquirer.js. Opens browser for Bale auth, configures output channel, validates channel credentials, saves to per-user config.
 - **Notification Engine** (`src/engine/`) — Headless Chromium with MutationObserver + WebSocket protobuf interception. Routes events to output channels.
-- **Session Persistence** (`src/storage.ts`, `src/cookies.ts`) — Saves and restores cookies + localStorage per user, so Bale WebSocket auth tokens survive context recreation.
+- **Session Persistence** (`src/storage.ts`, `src/cookies.ts`) — Saves and restores cookies + localStorage per user (used by wizard for initial setup). At runtime, each user's Puppeteer `userDataDir` provides native session persistence.
 - **Output Channels** (`src/channels/`) — Pluggable targets implementing `NotificationChannel` interface. Supported: Telegram, Discord, Slack.
 - **noVNC** (`src/setup/novnc.ts`) — Xvfb + x11vnc + websockify for remote browser access on headless servers. Shared Xvfb, per-user sessions.
 
@@ -53,7 +53,7 @@ Tests use vitest. Channel tests mock their APIs (Telegram bot, global fetch for 
 
 ```bash
 docker compose up --build
-# Ports 6081-6090 for per-user noVNC (auto-allocated)
+# Port 6080 for wizard (add-user), 6081-6090 for per-user noVNC (auto-allocated)
 # Volume: ./data:/data (master config + user configs + sessions)
 ```
 
@@ -83,10 +83,11 @@ Port allocation is persistent (stored in master.json). First user gets 6081, sec
 
 ## Key Implementation Details
 
-- **Browser contexts** — Single shared Puppeteer browser with per-user `BrowserContext` for isolation. Cookies + localStorage are saved/restored on context close.
+- **Per-user browsers** — Each user gets their own Puppeteer browser instance launched with `userDataDir` for native Chromium session persistence. No shared browser or browser contexts.
 - **Port stability** — Ports assigned from master.json `userPorts` map. Removing a user doesn't shift other users' ports.
-- **FSWatcher debounce** — 2-second debounce on `/data/users/` changes, with config.json validation before auto-starting users.
-- **Re-login safety** — Checks Xvfb availability before starting noVNC. Falls back to shared browser context if Xvfb is unavailable.
+- **User discovery** — FSWatcher (2-second debounce) plus periodic scan (15 seconds) on `/data/users/` for reliable detection even inside Docker volumes.
+- **Config hot-reload** — Per-user `config.json` watchers with 1-second debounce. Changes (e.g., notification preferences) are applied without restart.
+- **Re-login flow** — Always starts Xvfb + noVNC when headless. Sends notification with noVNC URL. After 3 failed attempts, enters 30-min cooldown.
 - **Decoder logging** — Undecoded WebSocket frames logged at debug level with frame size and first 8 bytes as hex.
 
 ## Project Structure
@@ -99,14 +100,14 @@ src/
 ├── cookies.ts            # Cookie persistence (save/load per session dir)
 ├── main.ts               # Entry point — CLI args → cli.ts, no args → orchestrator
 ├── cli.ts                # CLI handler: add-user, remove-user, list-users, status
-├── orchestrator.ts       # Multi-tenant orchestrator with shared browser + FSWatcher
+├── orchestrator.ts       # Multi-tenant orchestrator with per-user browsers, FSWatcher, periodic scan, config hot-reload
 ├── channels/
 │   ├── index.ts           # Factory: creates channel from config
 │   ├── telegram.ts        # Telegram Bot API
 │   ├── discord.ts         # Discord webhooks with rich embeds
 │   └── slack.ts           # Slack webhooks with formatted messages
 ├── engine/
-│   ├── browser.ts         # Puppeteer lifecycle, shared browser, per-user contexts
+│   ├── browser.ts         # Puppeteer lifecycle: launchBrowser (headless), launchReloginBrowser (headed via noVNC)
 │   ├── ws-hook.ts         # WebSocket constructor replacement for protobuf interception
 │   ├── decoder.ts         # Protobuf frame decoder with deduplication
 │   ├── event-parser.ts    # DecodedMessage → BaleEvent conversion

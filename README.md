@@ -57,7 +57,7 @@ Each user gets a unique noVNC port (6081, 6082, etc.) automatically allocated fr
 ```bash
 docker compose exec bale-notifier bale list-users    # List all configured users
 docker compose exec bale-notifier bale status         # Show running session status
-docker compose exec bane-notifier bale remove-user    # Remove a user and their data
+docker compose exec bale-notifier bale remove-user    # Remove a user and their data
 ```
 
 ### Without Docker
@@ -142,7 +142,7 @@ Per-user settings created by the setup wizard:
 
 ### noVNC (Headless Servers)
 
-When running on a server without a desktop, the wizard starts noVNC on the user's allocated port. The URL (with your server's external IP) is displayed during setup.
+During setup (`add-user`), the wizard starts noVNC on port 6080 for initial Bale authentication. During re-login (session expiry), each user's monitor starts noVNC on their allocated port from the 6081-6090 range.
 
 ```
 http://<server-ip>:<user-port>/vnc.html?autoconnect=true
@@ -161,8 +161,9 @@ Orchestrator
 
 - **Per-User Browsers** — Each user gets a Puppeteer browser with their own `userDataDir` (full Chromium profile with session persistence)
 - **WebSocket Interception** — Replaces WebSocket constructor to intercept Bale's protobuf frames
-- **FSWatcher** — Auto-detects new users and starts monitoring with 2-second debounce
+- **FSWatcher + Periodic Scan** — Auto-detects new users via filesystem watcher (2-second debounce) plus a 15-second periodic scan as a Docker volume fallback
 - **Channels** — Pluggable notification targets with retry logic and immediate validation
+- **Hot-reload** — User config changes (e.g., notification preferences) are picked up without restart
 
 ## Development
 
