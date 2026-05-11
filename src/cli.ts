@@ -38,12 +38,11 @@ async function addUser(): Promise<void> {
   if (masterConfig.serverIp === "localhost") {
     logger.info("The server IP is used in noVNC re-login links when Bale sessions expire.");
     logger.info("Enter the IP or hostname that you use to access this server from your browser.\n");
-    const ip = await input({ message: "Server IP or hostname:" });
-    if (!ip) {
-      logger.error("Server IP is required. Aborting.");
-      process.exit(1);
-    }
-    masterConfig.serverIp = ip;
+    const ip = await input({
+      message: "Server IP or hostname:",
+      validate: (v) => v.trim() ? true : "Server IP is required",
+    });
+    masterConfig.serverIp = ip.trim();
     saveMasterConfig(masterConfigPath, masterConfig);
     logger.info(`Server IP set to ${ip}\n`);
   } else {
