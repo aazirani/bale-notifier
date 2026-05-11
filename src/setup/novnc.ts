@@ -38,32 +38,40 @@ export class NoVncSession {
   async start(): Promise<string> {
     await ensureXvfb();
 
-    logger.info(`[noVNC] x11vnc: Starting on VNC port ${this.vncPort}...`);
     this.x11vnc = spawn("x11vnc", [
       "-display", DISPLAY,
       "-nopw",
+      "-q",
       "-listen", "localhost",
       "-forever",
       "-rfbport", String(this.vncPort),
     ], { stdio: ["ignore", "pipe", "pipe"] });
     this.x11vnc.on("error", (err) => logger.debug(`[noVNC] x11vnc error: ${err.message}`));
+    let x11vncReady = false;
     this.x11vnc.stderr?.on("data", (d: Buffer) => {
+      if (x11vncReady) return;
       const line = d.toString().trim();
-      if (line.includes("listen") || line.includes("port") || line.includes("error")) {
-        logger.info(`[noVNC] x11vnc: ${line}`);
+      if (line.includes("Listening for VNC connections")) {
+        logger.info(`[noVNC] x11vnc: Listening on VNC port ${this.vncPort}`);
+        x11vncReady = true;
       }
     });
     await sleep(NOVNC_STARTUP_DELAY_MS);
 
-    logger.info(`[noVNC] websockify: Starting on port ${this.port}...`);
     this.websockify = spawn("websockify", [
       "--web", "/usr/share/novnc",
       String(this.port),
       `localhost:${this.vncPort}`,
     ], { stdio: ["ignore", "pipe", "pipe"] });
     this.websockify.on("error", (err) => logger.debug(`[noVNC] websockify error: ${err.message}`));
+    let websockifyReady = false;
     this.websockify.stderr?.on("data", (d: Buffer) => {
-      logger.info(`[noVNC] websockify: ${d.toString().trim()}`);
+      if (websockifyReady) return;
+      const line = d.toString().trim();
+      if (line.includes("proxying from")) {
+        logger.info(`[noVNC] websockify: Ready on port ${this.port}`);
+        websockifyReady = true;
+      }
     });
     await sleep(NOVNC_WEBSOCKIFY_DELAY_MS);
 
@@ -98,6 +106,10 @@ export async function startNoVnc(): Promise<string> {
 export function stopNoVnc(): void {
   activeLegacySession?.stop();
   activeLegacySession = null;
+}
+
+export function isXvfbRunning(): boolean {
+  return xvfbStarted && sharedXvfb !== null && !sharedXvfb.killed;
 }
 
 function sleep(ms: number): Promise<void> {

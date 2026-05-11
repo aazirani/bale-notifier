@@ -1,4 +1,4 @@
-import type { Browser } from "puppeteer";
+import type { Browser, Page } from "puppeteer";
 import type { AppConfig, BaleEvent, NotificationChannel, DecodedMessage } from "../types.js";
 import { createUserContext, navigateToBale, launchReloginBrowser } from "./browser.js";
 import { WS_HOOK_SCRIPT } from "./ws-hook.js";
@@ -6,7 +6,7 @@ import { FrameDecoder } from "./decoder.js";
 import { parseDecodedMessage } from "./event-parser.js";
 import { startCallDetection } from "./call-detector.js";
 import { createChannel } from "../channels/index.js";
-import { NoVncSession } from "../setup/novnc.js";
+import { NoVncSession, isXvfbRunning } from "../setup/novnc.js";
 import { saveCookies } from "../cookies.js";
 import { saveLocalStorage } from "../storage.js";
 import { logger } from "../logger.js";
@@ -187,11 +187,15 @@ export class BaleMonitor {
     logger.warn(`[${this.userId}] Bale session expired. Starting re-login flow...\n`);
 
     const headless = !process.env.DISPLAY || process.env.DISPLAY === ":99" || process.env.DISPLAY === "";
+    const xvfbAvailable = isXvfbRunning();
 
     let novncUrl = "";
     let novnc: NoVncSession | null = null;
+    let usedSharedBrowser = false;
+    let reloginPage: Page;
+    let reloginClose: (() => Promise<void>) | null = null;
 
-    if (headless) {
+    if (headless && xvfbAvailable) {
       try {
         novnc = new NoVncSession(this.novncPort, this.vncPort);
         novncUrl = await novnc.start();
@@ -204,6 +208,7 @@ export class BaleMonitor {
     const externalUrl = this.serverIp && novncUrl
       ? novncUrl.replace("localhost", this.serverIp)
       : novncUrl;
+
     try {
       await this.dispatch({
         type: "relogin",
@@ -215,39 +220,51 @@ export class BaleMonitor {
       logger.warn(`[${this.userId}] Failed to send re-login notification:`, err);
     }
 
-    const display = novnc?.display || process.env.DISPLAY || ":99";
-    const { browser, page } = await launchReloginBrowser(display, this.config.bale.sessionDir);
+    if (novnc) {
+      const display = novnc.display;
+      const { browser, page } = await launchReloginBrowser(display, this.config.bale.sessionDir);
+      reloginPage = page;
+      reloginClose = () => browser.close();
+    } else if (this.sharedBrowser) {
+      logger.warn(`[${this.userId}] No noVNC available. Attempting headless re-login...`);
+      const session = await createUserContext(this.sharedBrowser, this.config.bale.sessionDir);
+      reloginPage = session.page;
+      reloginClose = session.close;
+      usedSharedBrowser = true;
+    } else {
+      logger.error(`[${this.userId}] No browser available for re-login. Skipping.`);
+      return;
+    }
 
     try {
-      await page.goto(BALE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+      await reloginPage.goto(BALE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
 
       try {
-        await page.waitForFunction(
+        await reloginPage.waitForFunction(
           `!document.querySelector('.splash-container') && !document.querySelector('.spin')`,
           { timeout: SPA_RENDER_TIMEOUT_MS },
         );
       } catch { /* ignore render timeout */ }
 
       try {
-        await page.waitForFunction(
+        await reloginPage.waitForFunction(
           `document.querySelectorAll('span, button, input').length > 5`,
           { timeout: CONTENT_RENDER_TIMEOUT_MS },
         );
       } catch { /* ignore content timeout */ }
 
       logger.info(`[${this.userId}] Waiting for re-login...`);
-      await page.waitForFunction(
+      await reloginPage.waitForFunction(
         `!window.location.pathname.includes('/login') && !document.body.textContent.includes('login me') && !document.body.textContent.includes('زبان')`,
         { timeout: RELOGIN_TIMEOUT_MS },
       );
       logger.info(`[${this.userId}] Re-login successful! Resuming monitoring...\n`);
 
-      const cookies = await page.cookies() as any;
+      const cookies = await reloginPage.cookies() as any;
       await saveCookies(cookies, this.config.bale.sessionDir);
 
-      // Save localStorage from re-login browser
       try {
-        const lsEntries = await page.evaluate(() => {
+        const lsEntries = await reloginPage.evaluate(() => {
           const items: { key: string; value: string }[] = [];
           for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
@@ -260,7 +277,7 @@ export class BaleMonitor {
         logger.debug(`[${this.userId}] Could not save localStorage after re-login:`, err);
       }
     } finally {
-      await browser.close();
+      await reloginClose?.();
       novnc?.stop();
     }
   }
