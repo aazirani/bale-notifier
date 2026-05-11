@@ -20,10 +20,11 @@ function isHeadless(): boolean {
   return !process.env.DISPLAY || process.env.DISPLAY === ":99" || process.env.DISPLAY === "";
 }
 
-export async function runWizard(configPath = DEFAULT_CONFIG_PATH): Promise<AppConfig> {
+export async function runWizard(configPath = DEFAULT_CONFIG_PATH, explicitSessionDir?: string): Promise<AppConfig> {
   logger.info("Welcome to Bale Notifier!\n");
 
-  const sessionDir = await setupBaleAuth();
+  const sessionDir = explicitSessionDir || sessionDirFromConfigPath(configPath);
+  await setupBaleAuth(sessionDir);
   const channelConfig = await setupChannel();
   const notifications = await setupNotificationPrefs();
   const noVncUrl = await setupNoVncUrl();
@@ -41,7 +42,7 @@ export async function runWizard(configPath = DEFAULT_CONFIG_PATH): Promise<AppCo
   return config;
 }
 
-async function setupBaleAuth(): Promise<string> {
+async function setupBaleAuth(sessionDir: string): Promise<void> {
   logger.info("Step 1: Authenticate with Bale\n");
 
   const headless = isHeadless();
@@ -52,8 +53,6 @@ async function setupBaleAuth(): Promise<string> {
     logger.info(`Open this URL in your browser to log into Bale:\n  ${url}\n`);
     process.env.DISPLAY = ":99";
   }
-
-  const sessionDir = sessionDirFromConfigPath(DEFAULT_CONFIG_PATH);
 
   // Clean up stale Chromium lock files from previous runs
   const lockFile = `${sessionDir}/SingletonLock`;
@@ -125,7 +124,6 @@ async function setupBaleAuth(): Promise<string> {
   }
 
   logger.info("Bale session captured.\n");
-  return sessionDir;
 }
 
 async function setupChannel(): Promise<AppConfig["channel"]> {
