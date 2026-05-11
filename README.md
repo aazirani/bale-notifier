@@ -6,17 +6,19 @@
 
 Monitor [Bale messenger](https://web.bale.ai) for new messages and incoming calls, then forward notifications to **Telegram**, **Discord**, or **Slack**.
 
-Runs headless in Docker with Puppeteer — no desktop needed.
+Runs headless in Docker with Puppeteer — no desktop needed. Single container supports multiple users.
 
 ## Features
 
-- **Message monitoring** — Detects new unread messages in Bale chats
-- **Call alerts** — Notifies on incoming voice/video calls
+- **Message monitoring** — Detects new unread messages in Bale chats via WebSocket protobuf interception
+- **Call alerts** — Notifies on incoming voice/video calls via DOM monitoring
+- **Multi-tenant** — Multiple users in a single container with shared browser
 - **Multi-channel** — Forwards to Telegram, Discord, or Slack
 - **Docker-ready** — Single `docker compose up` to start
 - **noVNC access** — Browser-based remote access for Bale login on headless servers
 - **Auto-reconnect** — Recovers from browser crashes with exponential backoff
-- **Retry logic** — Retries failed notification deliveries with exponential backoff
+- **Channel validation** — Validates bot tokens and webhook URLs during setup
+- **Re-login protection** — Max 3 attempts, then 30-min cooldown with notification
 
 ## Quick Start
 
@@ -25,16 +27,38 @@ Runs headless in Docker with Puppeteer — no desktop needed.
 ```bash
 git clone https://github.com/aazirani/bale-notifier.git
 cd bale-notifier
-docker compose up --build
+docker compose up --build -d
 ```
 
-First run launches a setup wizard:
+Add your first user:
 
-1. **Authenticate with Bale** — A browser opens (or noVNC URL is shown on headless servers). Log into Bale with your phone number and SMS code.
-2. **Choose notification channel** — Select Telegram, Discord, or Slack and provide credentials.
-3. **Set preferences** — Choose which events to be notified about.
+```bash
+docker compose exec bale-notifier bale add-user
+```
 
-Config is saved to `./data/config.json`. Session data persists in `./data/bale-session/`.
+The setup wizard will:
+1. **Configure server IP** — Enter your server's external IP (for noVNC re-login links)
+2. **Authenticate with Bale** — A noVNC URL is shown. Open it in your browser and log into Bale.
+3. **Choose notification channel** — Select Telegram, Discord, or Slack and provide credentials. They're validated immediately.
+4. **Set preferences** — Choose which events to be notified about.
+
+Config is saved to `./data/users/<user-id>/config.json`. Session data persists in `./data/users/<user-id>/session/`.
+
+### Adding More Users
+
+```bash
+docker compose exec bale-notifier bale add-user
+```
+
+Each user gets a unique noVNC port (6081, 6082, etc.) automatically allocated from the port range.
+
+### Other Commands
+
+```bash
+docker compose exec bale-notifier bale list-users    # List all configured users
+docker compose exec bale-notifier bale status         # Show running session status
+docker compose exec bane-notifier bale remove-user    # Remove a user and their data
+```
 
 ### Without Docker
 
@@ -44,17 +68,38 @@ Requires Node.js 20+ and Chromium installed:
 git clone https://github.com/aazirani/bale-notifier.git
 cd bale-notifier
 npm install
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser npm start
+npm run build
+PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser node dist/main.js add-user
 ```
 
 ## Configuration
 
-The setup wizard creates `./data/config.json`:
+### Master Config (`./data/master.json`)
+
+Global settings shared across all users:
+
+```json
+{
+  "serverIp": "203.0.113.10",
+  "novncPortRange": [6081, 6090],
+  "loginTimeoutMinutes": 15,
+  "userPorts": {
+    "alice": 6081,
+    "bob": 6082
+  }
+}
+```
+
+Created automatically on first `add-user`. The server IP is asked once and reused for subsequent users.
+
+### User Config (`./data/users/{userId}/config.json`)
+
+Per-user settings created by the setup wizard:
 
 ```json
 {
   "bale": {
-    "sessionDir": "/data/bale-session"
+    "sessionDir": "/data/users/alice/session"
   },
   "channel": {
     "type": "telegram",
@@ -76,75 +121,51 @@ The setup wizard creates `./data/config.json`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOG_LEVEL` | `info` | Logging verbosity: `debug`, `info`, `warn`, `error` |
-| `CONFIG_PATH` | `/data/config.json` | Path to config file |
+| `DATA_DIR` | `/data` | Base data directory |
 | `PUPPETEER_EXECUTABLE_PATH` | — | Path to Chromium binary |
 | `DISPLAY` | — | X11 display for headed mode |
-| `NOVNC_PORT` | `6080` | Port for noVNC web access |
-| `VNC_PORT` | `5900` | Port for VNC server |
 
 ### noVNC (Headless Servers)
 
-When running on a server without a desktop, the wizard starts noVNC on the configured port (default **6080**). Open `http://your-server:6080/vnc.html?autoconnect=true` in your browser to complete Bale login.
+When running on a server without a desktop, the wizard starts noVNC on the user's allocated port. The URL (with your server's external IP) is displayed during setup.
 
-## Multi-Instance
-
-Run multiple instances for different users on the same server. Each user gets their own container with isolated ports and data.
-
-Edit `docker-compose.yml` and duplicate the `user1` block for each additional user:
-
-```yaml
-user2:
-  <<: *bale-notifier
-  container_name: bale-user2
-  ports:
-    - "6082:6082"
-  volumes:
-    - ./data/user2:/data
-  environment:
-    - DISPLAY=:99
-    - NOVNC_PORT=6082
-    - VNC_PORT=5902
+```
+http://<server-ip>:<user-port>/vnc.html?autoconnect=true
 ```
 
-Then start all instances:
-
-```bash
-docker compose up --build -d
-```
-
-Each instance runs its own Chromium process (~200-400MB RAM). Plan server resources accordingly.
+Ports are stable — removing a user doesn't shift other users' ports.
 
 ## Architecture
 
 ```
-Bale Web (Puppeteer) → DOM MutationObserver → Event Parser → Notification Channel
-                                                                          ├─ Telegram
-                                                                          ├─ Discord
-                                                                          └─ Slack
+Shared Puppeteer Browser
+  ├─ User Context (alice) → WS Interceptor → Decoder → Event Parser → Telegram
+  ├─ User Context (bob)   → WS Interceptor → Decoder → Event Parser → Discord
+  └─ User Context (carol) → WS Interceptor → Decoder → Event Parser → Slack
 ```
 
-- **Browser Engine** — Headless Chromium loads `web.bale.ai` and monitors the DOM for changes
-- **DOM Monitoring** — MutationObserver detects call modals and unread badge changes
-- **Event Parser** — Converts DOM mutations into typed events
-- **Channels** — Pluggable notification targets with retry logic
+- **Shared Browser** — One Chromium instance with isolated browser contexts per user (~700MB total for 10 users)
+- **WebSocket Interception** — Replaces WebSocket constructor to intercept Bale's protobuf frames
+- **Session Persistence** — Cookies + localStorage saved/restored per user
+- **FSWatcher** — Auto-detects new users and starts monitoring with 2-second debounce
+- **Channels** — Pluggable notification targets with retry logic and immediate validation
 
 ## Development
 
 ```bash
 npm install        # Install dependencies
 npm run build      # Compile TypeScript
-npm test           # Run test suite
+npm test           # Run test suite (76 tests)
 npm run test:watch # Run tests in watch mode
-npm run dev        # Watch mode for development
 ```
 
 ## Troubleshooting
 
-**"Bale session expired"** — The notifier will automatically start a re-login flow and send you a noVNC link. If that fails, delete `./data/bale-session` and `./data/config.json`, then restart to re-authenticate from scratch.
+**"Bale session expired"** — The notifier starts a re-login flow and sends a noVNC link. After 3 failed attempts, monitoring pauses for 30 minutes and you'll need to re-login manually.
 
-**No notifications arriving** — Set `LOG_LEVEL=debug` to see detailed monitoring output. Check that your bot token/webhook URL is valid.
+**No notifications arriving** — Set `LOG_LEVEL=debug` to see WebSocket frame decoding details. Check that cookies + localStorage are being saved in `./data/users/<id>/session/`.
 
-**noVNC not loading** — Ensure port 6080 is not blocked by a firewall. The container must be running with `tty: true`.
+**noVNC not loading** — Ensure ports 6081-6090 are not blocked by a firewall. Check the user's allocated port in `./data/master.json`.
 
 **Empty Telegram getUpdates** — Open the getUpdates URL in a new browser window (or incognito). If still empty, send a new message to the bot and refresh.
 
