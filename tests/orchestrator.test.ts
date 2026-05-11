@@ -93,4 +93,32 @@ describe("Orchestrator", () => {
     const statePath = path.join(tmpDir, "state.json");
     expect(fs.existsSync(statePath)).toBe(true);
   });
+
+  it("allocates persistent ports via master config", async () => {
+    writeUserConfig("alice");
+    writeUserConfig("bob");
+    const { Orchestrator } = await import("../src/orchestrator.js");
+    const orch = new Orchestrator(tmpDir);
+    const port1 = (orch as any).allocatePort("alice");
+    const port2 = (orch as any).allocatePort("bob");
+    expect(port1).toBe(6081);
+    expect(port2).toBe(6082);
+
+    // Same port on repeat calls
+    const port1Again = (orch as any).allocatePort("alice");
+    const port2Again = (orch as any).allocatePort("bob");
+    expect(port1Again).toBe(6081);
+    expect(port2Again).toBe(6082);
+  });
+
+  it("persists userPorts in master.json", async () => {
+    writeUserConfig("alice");
+    const { Orchestrator } = await import("../src/orchestrator.js");
+    const orch = new Orchestrator(tmpDir);
+    (orch as any).allocatePort("alice");
+
+    const masterPath = path.join(tmpDir, "master.json");
+    const saved = JSON.parse(fs.readFileSync(masterPath, "utf-8"));
+    expect(saved.userPorts.alice).toBe(6081);
+  });
 });

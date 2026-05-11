@@ -175,10 +175,21 @@ export class Orchestrator {
   }
 
   private allocatePort(userId: string): number {
-    const users = discoverUsers(this.usersDir).sort();
-    const index = users.indexOf(userId);
-    const [start] = this.masterConfig.novncPortRange;
-    return start + index;
+    if (this.masterConfig.userPorts[userId] !== undefined) {
+      return this.masterConfig.userPorts[userId];
+    }
+
+    const [start, end] = this.masterConfig.novncPortRange;
+    const usedPorts = new Set(Object.values(this.masterConfig.userPorts));
+    for (let port = start; port <= end; port++) {
+      if (!usedPorts.has(port)) {
+        this.masterConfig.userPorts[userId] = port;
+        saveMasterConfig(this.masterConfigPath, this.masterConfig);
+        return port;
+      }
+    }
+
+    throw new Error(`No available ports in range ${start}-${end}`);
   }
 
   private onUsersDirChange(): void {
