@@ -1,6 +1,6 @@
 // --- Bale Event Types ---
 
-export type BaleEventType = "message" | "call" | "group_notification";
+export type BaleEventType = "message" | "call" | "group_notification" | "relogin";
 
 export interface BaleEvent {
   type: BaleEventType;
@@ -44,6 +44,7 @@ export interface NotificationPreferences {
 export interface AppConfig {
   bale: {
     sessionDir: string;
+    noVncUrl: string;
   };
   channel: {
     type: ChannelType;
@@ -64,4 +65,22 @@ export interface DecodedMessage {
   date: bigint;
   preview: string;
   messageType: "text" | "document" | "sticker" | "animated_sticker" | "poll" | "deleted" | "empty" | "unknown";
+}
+
+// --- Multi-Tenant Types ---
+
+export interface MasterConfig {
+  serverIp: string;
+  novncPortRange: [number, number];
+  loginTimeoutMinutes: number;
+  logLevel?: string;
+}
+
+export type UserStatus = "starting" | "running" | "reconnecting" | "needs-login" | "stopped";
+
+export interface UserState {
+  userId: string;
+  status: UserStatus;
+  lastPing?: string;
+  lastReconnect?: string;
 }

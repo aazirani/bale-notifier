@@ -39,3 +39,11 @@ export const BROWSER_LAUNCH_ARGS = [
 // Decoder
 export const DEDUP_BUFFER_SIZE = 100;
 export const PREVIEW_MAX_LENGTH = 100;
+
+// Multi-Tenant
+export const DEFAULT_USERS_DIR = "/data/users";
+export const DEFAULT_MASTER_CONFIG_PATH = "/data/master.json";
+export const DEFAULT_STATE_PATH = "/data/state.json";
+export const DEFAULT_NOVNC_PORT_RANGE: [number, number] = [6081, 6090];
+export const DEFAULT_LOGIN_TIMEOUT_MINUTES = 15;
+export const STATE_SAVE_INTERVAL_MS = 30_000;
