@@ -48,3 +48,4 @@ export const DEFAULT_STATE_PATH = "/data/state.json";
 export const DEFAULT_NOVNC_PORT_RANGE: [number, number] = [6081, 6090];
 export const DEFAULT_LOGIN_TIMEOUT_MINUTES = 15;
 export const STATE_SAVE_INTERVAL_MS = 30_000;
+export const USER_SCAN_INTERVAL_MS = 15_000;

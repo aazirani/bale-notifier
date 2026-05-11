@@ -11,6 +11,7 @@ import {
 import { logger } from "./logger.js";
 import {
   STATE_SAVE_INTERVAL_MS,
+  USER_SCAN_INTERVAL_MS,
 } from "./constants.js";
 
 interface UserSession {
@@ -30,6 +31,7 @@ export class Orchestrator {
   private watcher: fs.FSWatcher | null = null;
   private configWatchers: Map<string, fs.FSWatcher> = new Map();
   private watcherTimer: NodeJS.Timeout | null = null;
+  private userScanInterval: NodeJS.Timeout | null = null;
 
   constructor(dataDir: string = "/data") {
     this.usersDir = path.join(dataDir, "users");
@@ -68,6 +70,10 @@ export class Orchestrator {
       this.saveState().catch((err) => logger.error("Failed to save state:", err));
     }, STATE_SAVE_INTERVAL_MS);
 
+    this.userScanInterval = setInterval(() => {
+      this.onUsersDirChange();
+    }, USER_SCAN_INTERVAL_MS);
+
     await this.saveState();
   }
 
@@ -76,6 +82,9 @@ export class Orchestrator {
 
     if (this.stateSaveInterval) {
       clearInterval(this.stateSaveInterval);
+    }
+    if (this.userScanInterval) {
+      clearInterval(this.userScanInterval);
     }
     if (this.watcherTimer) {
       clearTimeout(this.watcherTimer);
